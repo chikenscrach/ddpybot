@@ -1,0 +1,54 @@
+{
+    "token": "token",
+    "url_pic": [
+        "https://imgur.com/Wd7vq3K",
+        "https://imgur.com/a/5XEcL7t",
+        "https://pbs.twimg.com/media/Ev2ZteZVIAAN6F9?format=png&name=4096x4096",
+        "https://pbs.twimg.com/media/EvZRXqHVoAEjCbN?format=jpg&name=4096x4096",
+        "https://pbs.twimg.com/media/EyNxPVhU4AUlu0Q?format=png&name=4096x4096"
+    ],
+    "gura": [
+        "https://pbs.twimg.com/media/EyNxPVhU4AUlu0Q?format=png&name=4096x4096"
+    ],
+    "time": "0000",
+    "luna": [
+        "https://pbs.twimg.com/media/Ey0Gs0FUUAYBG1i?format=png&name=4096x4096",
+        "https://pbs.twimg.com/media/EuLJJJSVgAofHDf?format=png&name=4096x4096",
+        "https://pbs.twimg.com/media/Eq4wPq1U0AAWk4a?format=png&name=4096x4096",
+        "https://pbs.twimg.com/media/EmgvQfWUYAYrVEL?format=png&name=4096x4096",
+        "https://pbs.twimg.com/media/Eloa-7DVMAUWMRb?format=png&name=4096x4096"
+    ],
+    "night": [
+        "\u4e00\u5c4c\u934b",
+        "\u9999\u751c\u5143",
+        "\u6eff\u98df\u7d00",
+        "\u7fd4\u98df\u5802",
+        "\u6c34\u9903\u5e97",
+        "\u6bd4\u5927\u723a",
+        "\u9999\u714e",
+        "\u97d3\u6797",
+        "\u4f86\u5ba2",
+        "\u9ea5\u5473\u767b",
+        "\u5ba2\u81e8"
+    ],
+    "back": [
+        "\u8c46\u82b1\u5e97",
+        "\u963f\u7c73\u6797",
+        "\u81ea\u5df1\u716e",
+        "\u77f3\u934b\u62cc\u98ef",
+        "\u8ff7\u8def",
+        "\u7d05\u6cb9",
+        "\u4f86\u5ba2\u5821",
+        "\u7530\u5712",
+        "\u8aa0\u98df \u5802",
+        "\u9178\u8fa3\u7c89",
+        "daddy",
+        "\u6ae5\u7a97",
+        "\u7c73\u8c46",
+        "\u6709\u7c97\u9b6f\u6f22\u5821\u90a3\u5bb6(\u9054\u6ce2?)"
+    ],
+    "member":[
+      "<@1>",
+      "<@2>"
+    ]
+}
