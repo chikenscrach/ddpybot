@@ -78,7 +78,7 @@ class Task(Cog_Extension):
             while not self.bot.is_closed():
                 now_time = datetime.datetime.now().strftime('%H%M')
                 if now_time == "1200" and self.teratimer == 0:
-                    webhook_url = 'https://ptb.discord.com/api/webhooks/993546152005869579/c333UF0ZknibxdfRLJhHMMhHHfnads0U-YouBTfrX2OWng2G4IAjYwIXvqkOgsp2DTUb'
+                    webhook_url = 'webhook_url'
                     slack_data = {'content':"<@800620782585643038> TERABOX領個 <a:FinanaWaveAni:993901012685422674>","username":"提醒ㄐㄐ人","avatar_url":"https://pbs.twimg.com/profile_images/1417779662348984324/eG2a5mY4_400x400.jpg"}
                     response = requests.post(webhook_url, data=json.dumps(slack_data),headers={'Content-Type': 'application/json'})
                     self.teratimer = 1
