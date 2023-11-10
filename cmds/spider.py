@@ -84,7 +84,7 @@ class Game(Cog_Extension):
             tm = b // 60
             b -= tm * 60
             await ctx.send("鯊鯊上次開台已經過了：")
-            last = str(int(td)) + " 天 " + str(int(th-8)) + " 時 " + str(int(tm)) + " 分 " + str(int(b)) + " 秒"
+            last = str(int(td)) + " 天 " + str(int(th)) + " 時 " + str(int(tm)) + " 分 " + str(int(b)) + " 秒" # 這邊要注意時區...
             await ctx.send(last)
             await ctx.send(stream)
             
