@@ -1,3 +1,2 @@
-discord.py==1.7.3
-flask
-bs4
+discord.py==2.6.4
+tzdata

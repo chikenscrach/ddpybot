@@ -1,1 +1,45 @@
+# --- 你指定的檔案 ---
+venv/
+.venv/
 setting.json
+settings.json
+data/ping_count.db
+
+# --- Python 自動產生的暫存檔 ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- 散佈/套件包相關 ---
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+
+# --- 單元測試與覆蓋率 ---
+htmlcov/
+.tox/
+.nox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.pytest_cache/
+
+# --- IDE 設定 (如果你使用 VS Code 或 PyCharm) ---
+.vscode/
+.idea/
+
+# --- 作業系統系統檔 ---
+.DS_Store
+Thumbs.db
