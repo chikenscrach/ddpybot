@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from core.classes import Cog_Extension
+from core.classes import Cog_Extension, is_manager
 import random
 import json
 import datetime
@@ -26,6 +26,7 @@ class React(Cog_Extension):
 
     @commands.hybrid_command(name='clean', description='清除指定數量的訊息')
     @app_commands.describe(num='要清除的訊息數量')
+    @is_manager()
     async def clean(self, ctx, num: int):
         await ctx.channel.purge(limit=num)
         # 斜線指令需要回應，否則會顯示「互動失敗」

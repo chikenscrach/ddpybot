@@ -10,6 +10,16 @@ with open('setting.json', 'r', encoding = 'utf8') as jfile:
 
 class Event(Cog_Extension):
     @commands.Cog.listener()
+    async def on_command_error(self, ctx, error):
+        if isinstance(error, commands.CheckFailure):
+            await ctx.send('🚫 **你沒有權限使用此指令！**', delete_after=5)
+        
+        elif isinstance(error, commands.CommandNotFound):
+            pass
+            
+        else:
+            print(f'⚠️ 發生錯誤: {error}')
+    
     async def on_message(self, msg):
         if msg.author == self.bot.user:
             return

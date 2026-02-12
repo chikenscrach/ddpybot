@@ -4,13 +4,15 @@ from discord import app_commands
 from core.classes import Cog_Extension
 from typing import Optional
 
-# ✅ 每個 Cog 對應的 Emoji（可自行修改）
+# ✅ 每個 Cog 對應的 Emoji（新增 Info 和 AI）
 COG_EMOJI = {
     'Main': '🏠',
     'React': '🎭',
     'Event': '📡',
     'Task': '⏰',
     'Help': '❓',
+    'Info': '📋',      # ← 新增
+    'AI': '🤖',        # ← 如果你有 ai.py 也加上
 }
 
 
@@ -38,7 +40,6 @@ class HelpView(discord.ui.View):
             return False
         return True
 
-    # ========== 第一頁 ==========
     @discord.ui.button(label='⏪', style=discord.ButtonStyle.secondary)
     async def btn_first(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_author(interaction):
@@ -47,7 +48,6 @@ class HelpView(discord.ui.View):
         self._update_buttons()
         await interaction.response.edit_message(embed=self.pages[0], view=self)
 
-    # ========== 上一頁 ==========
     @discord.ui.button(label='◀', style=discord.ButtonStyle.primary)
     async def btn_prev(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_author(interaction):
@@ -56,12 +56,10 @@ class HelpView(discord.ui.View):
         self._update_buttons()
         await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
 
-    # ========== 頁碼顯示 ==========
     @discord.ui.button(label='1 / 1', style=discord.ButtonStyle.secondary, disabled=True)
     async def btn_page(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
 
-    # ========== 下一頁 ==========
     @discord.ui.button(label='▶', style=discord.ButtonStyle.primary)
     async def btn_next(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_author(interaction):
@@ -70,7 +68,6 @@ class HelpView(discord.ui.View):
         self._update_buttons()
         await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
 
-    # ========== 最後一頁 ==========
     @discord.ui.button(label='⏩', style=discord.ButtonStyle.secondary)
     async def btn_last(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await self._check_author(interaction):
@@ -79,7 +76,6 @@ class HelpView(discord.ui.View):
         self._update_buttons()
         await interaction.response.edit_message(embed=self.pages[-1], view=self)
 
-    # ========== 超時後禁用所有按鈕 ==========
     async def on_timeout(self):
         for item in self.children:
             item.disabled = True
@@ -93,7 +89,6 @@ class HelpView(discord.ui.View):
 class Help(Cog_Extension):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
-        # 移除 discord.py 內建的 help 指令
         self.bot.remove_command('help')
 
     @commands.hybrid_command(name='help', description='查看所有指令')
@@ -112,12 +107,28 @@ class Help(Cog_Extension):
         pages = []
         cog_list = []
 
-        # 蒐集所有有指令的 Cog
         for cog_name, cog in self.bot.cogs.items():
-            cmds = cog.get_commands()
-            if not cmds:
+            # ====================================================
+            #  ✅ 同時蒐集 prefix/hybrid 指令 和 純 app_commands
+            # ====================================================
+            prefix_cmds = cog.get_commands()                # !cmd / hybrid
+            slash_cmds  = cog.get_app_commands()            # /cmd (純斜線)
+
+            # 過濾掉已經是 hybrid 的（避免重複顯示）
+            # hybrid_command 會同時出現在兩邊，只保留 prefix 那側
+            hybrid_names = {
+                c.name for c in prefix_cmds
+                if isinstance(c, commands.HybridCommand)
+            }
+            pure_slash = [
+                c for c in slash_cmds
+                if c.name not in hybrid_names
+            ]
+
+            if not prefix_cmds and not pure_slash:
                 continue
-            cog_list.append((cog_name, cog, cmds))
+
+            cog_list.append((cog_name, cog, prefix_cmds, pure_slash))
 
         if not cog_list:
             return pages
@@ -135,23 +146,32 @@ class Help(Cog_Extension):
         if self.bot.user and self.bot.user.avatar:
             home.set_thumbnail(url=self.bot.user.avatar.url)
 
-        for cog_name, cog, cmds in cog_list:
+        for cog_name, cog, prefix_cmds, pure_slash in cog_list:
             emoji = COG_EMOJI.get(cog_name, '📁')
-            cmd_names = '、'.join(f'`{c.name}`' for c in cmds)
+
+            # 合併所有指令名稱
+            all_names = [f'`{c.name}`' for c in prefix_cmds]
+            all_names += [f'`/{c.name}`' for c in pure_slash]
+            total = len(prefix_cmds) + len(pure_slash)
+
             home.add_field(
-                name=f'{emoji} {cog_name}（{len(cmds)} 個指令）',
-                value=cmd_names,
+                name=f'{emoji} {cog_name}（{total} 個指令）',
+                value='、'.join(all_names),
                 inline=False,
             )
 
-        total_cmds = sum(len(cmds) for _, _, cmds in cog_list)
-        home.set_footer(text=f'共 {len(cog_list)} 個分類、{total_cmds} 個指令 • 首頁')
+        total_cmds = sum(
+            len(p) + len(s) for _, _, p, s in cog_list
+        )
+        home.set_footer(
+            text=f'共 {len(cog_list)} 個分類、{total_cmds} 個指令 • 首頁'
+        )
         pages.append(home)
 
         # ==========================================
         #  各分類頁面
         # ==========================================
-        for i, (cog_name, cog, cmds) in enumerate(cog_list):
+        for i, (cog_name, cog, prefix_cmds, pure_slash) in enumerate(cog_list):
             emoji = COG_EMOJI.get(cog_name, '📁')
 
             embed = discord.Embed(
@@ -160,20 +180,35 @@ class Help(Cog_Extension):
                 color=0x5865F2,
             )
 
-            for cmd in cmds:
-                # 判斷是否支援斜線指令
+            # ── prefix / hybrid 指令 ──
+            for cmd in prefix_cmds:
                 if isinstance(cmd, commands.HybridCommand):
                     cmd_type = '`/` `!`'
                 else:
                     cmd_type = '`!`'
 
-                # 指令說明
                 desc = cmd.description or cmd.help or '沒有說明'
-
-                # 指令用法（含參數）
                 signature = cmd.signature
-                if signature:
-                    usage = f'{cmd.name} {signature}'
+                usage = f'{cmd.name} {signature}' if signature else cmd.name
+
+                embed.add_field(
+                    name=f'{cmd_type}  `{usage}`',
+                    value=f'> {desc}',
+                    inline=False,
+                )
+
+            # ── ✅ 純 app_commands（斜線指令）──
+            for cmd in pure_slash:
+                cmd_type = '`/`'
+                desc = cmd.description or '沒有說明'
+
+                # 組裝參數簽名
+                if cmd.parameters:
+                    params = ' '.join(
+                        f'<{p.name}>' if p.required else f'[{p.name}]'
+                        for p in cmd.parameters
+                    )
+                    usage = f'{cmd.name} {params}'
                 else:
                     usage = cmd.name
 
@@ -183,8 +218,10 @@ class Help(Cog_Extension):
                     inline=False,
                 )
 
+            total = len(prefix_cmds) + len(pure_slash)
             embed.set_footer(
-                text=f'第 {i + 2} / {len(cog_list) + 1} 頁 • {cog_name}'
+                text=f'第 {i + 2} / {len(cog_list) + 1} 頁 • '
+                     f'{cog_name}（{total} 個指令）'
             )
             pages.append(embed)
 

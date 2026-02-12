@@ -16,19 +16,20 @@
 ## 🚀 專案結構
 
 ```
-.
-├── main.py          # 機器人主程式 (啟動入口)
-├── setting.json     # 設定檔 (Token, ID 等)
-├── requirements.txt # 依賴套件列表
+ddpybot/
+├── main.py                # 機器人啟動入口 (載入 cogs, sync tree)
+├── setting.json           # 設定檔 (Token, Key, Moderator IDs)
 ├── core/
-│   └── classes.py   # 核心類別 (Cog_Extension)
-├── cmds/            # 指令模組 (Cogs)
-│   ├── event.py     # 事件監聽
-│   ├── main.py      # 一般指令
-│   ├── react.py     # 反應與訊息操作
-│   └── task.py      # 定時任務與資料庫
-└── data/            # 資料儲存 (自動生成)
-    └── ping_count.db # SQLite 資料庫
+│   └── classes.py         # 共用類別 (Cog_Extension, is_manager)
+├── cmds/                  # 所有指令模組 (Cogs)
+│   ├── main.py            # 基本指令 (ping, whoru)
+│   ├── events.py          # 事件監聽 (on_message, on_error)
+│   ├── react.py           # 互動指令 (clean, say, 圖片)
+│   ├── task.py            # 排程任務 (每日標記, 資料庫操作)
+│   ├── ai.py              # AI 對話 (OpenRouter API)
+│   └── help.py            # 自訂說明選單 (按鈕翻頁)
+└── data/                  # 資料庫存放區
+    └── ping_count.db      # SQLite 資料庫檔案 (自動生成)
 ```
 
 ## ⚙️ 安裝與設定
@@ -49,8 +50,13 @@ pip install -r requirements.txt
 `setting.json` 格式如下：
 ```json
 {
-    "token": "你的_BOT_TOKEN",
-    "DAILY_CHANNEL_ID": 12345
+	"token": "",
+	"openrouter_api_key": "",
+	"DAILY_CHANNEL_ID": 12345,
+	"moderator_ids": [
+        123456789012345678, 
+        987654321098765432
+    ]
 }
 ```
 
