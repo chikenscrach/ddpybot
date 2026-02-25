@@ -22,12 +22,14 @@ ddpybot/
 ├── core/
 │   └── classes.py         # 共用類別 (Cog_Extension, is_manager)
 ├── cmds/                  # 所有指令模組 (Cogs)
-│   ├── main.py            # 基本指令 (ping, whoru)
-│   ├── events.py          # 事件監聽 (on_message, on_error)
-│   ├── react.py           # 互動指令 (clean, say, 圖片)
-│   ├── task.py            # 排程任務 (每日標記, 資料庫操作)
 │   ├── ai.py              # AI 對話 (OpenRouter API)
-│   └── help.py            # 自訂說明選單 (按鈕翻頁)
+│   ├── earthquake.py      # 查詢地震資料 (最近地震, 地震報告)
+│   ├── events.py          # 事件監聽 (on_message, on_error)
+│   ├── help.py            # 自訂說明選單 (按鈕翻頁)
+│   ├── info.py            # 顯示機器人資訊 (運行狀態, 版本資訊)
+│   ├── main.py            # 基本指令 (ping, whoru)
+│   ├── react.py           # 互動指令 (clean, say, 圖片)
+│   └── task.py            # 排程任務 (每日標記, 資料庫操作)
 └── data/                  # 資料庫存放區
     └── ping_count.db      # SQLite 資料庫檔案 (自動生成)
 ```
@@ -53,6 +55,7 @@ pip install -r requirements.txt
 	"token": "",
 	"openrouter_api_key": "",
 	"DAILY_CHANNEL_ID": 12345,
+	"CWA_API_KEY": "CWA-",
 	"moderator_ids": [
         123456789012345678, 
         987654321098765432

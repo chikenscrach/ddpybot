@@ -1,0 +1,289 @@
+import discord
+from discord import app_commands
+from discord.ext import commands
+import aiohttp
+import json
+from datetime import datetime, timezone, timedelta
+from core.classes import Cog_Extension
+
+
+class Earthquake(Cog_Extension):
+    """中央氣象署地震資訊查詢"""
+
+    DATASETS = {
+        "E-A0015-001": "顯著有感地震",
+        "E-A0016-001": "小區域有感地震",
+    }
+    BASE_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
+
+    INTENSITY_ORDER = {
+        "1級": 1, "2級": 2, "3級": 3, "4級": 4,
+        "5弱級": 5, "5弱": 5, "5強級": 6, "5強": 6,
+        "6弱級": 7, "6弱": 7, "6強級": 8, "6強": 8,
+        "7級": 9,
+    }
+
+    def __init__(self, bot: commands.Bot):
+        super().__init__(bot)
+        with open("setting.json", "r", encoding="utf-8") as f:
+            setting = json.load(f)
+        self.api_key: str = setting.get("CWA_API_KEY", "")
+
+    # ────────── 工具方法 ──────────
+
+    @staticmethod
+    def _mag_color(mag: float) -> int:
+        if mag >= 6.0:
+            return 0xE74C3C
+        if mag >= 5.0:
+            return 0xE67E22
+        if mag >= 4.0:
+            return 0xF1C40F
+        if mag >= 3.0:
+            return 0x2ECC71
+        return 0x3498DB
+
+    @staticmethod
+    def _mag_emoji(mag: float) -> str:
+        if mag >= 6.0:
+            return "🔴"
+        if mag >= 5.0:
+            return "🟠"
+        if mag >= 4.0:
+            return "🟡"
+        if mag >= 3.0:
+            return "🟢"
+        return "🔵"
+
+    @staticmethod
+    def _to_unix(time_str: str) -> int:
+        """將 CWA 時間字串 (UTC+8) 轉為 Unix Timestamp"""
+        dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
+        dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        return int(dt.timestamp())
+
+    def _get_max_intensity(self, quake: dict) -> str:
+        areas = quake.get("Intensity", {}).get("ShakingArea", [])
+        if not areas:
+            return "—"
+        max_val = 0
+        max_label = "—"
+        for area in areas:
+            raw = area.get("AreaIntensity", "")
+            val = self.INTENSITY_ORDER.get(raw, 0)
+            if val > max_val:
+                max_val = val
+                max_label = raw
+        return max_label
+
+    def _group_shaking_areas(self, quake: dict) -> list[tuple[str, list[str]]]:
+        """將各地震度依等級分組，去重後由大到小排列"""
+        areas = quake.get("Intensity", {}).get("ShakingArea", [])
+        if not areas:
+            return []
+
+        groups: dict[str, set[str]] = {}
+        for area in areas:
+            intensity = area.get("AreaIntensity", "")
+            county = area.get("CountyName", "")
+            if not intensity or not county:
+                continue
+            if intensity not in groups:
+                groups[intensity] = set()
+            # 處理「、」或「,」分隔的多縣市
+            for c in county.replace("、", ",").split(","):
+                c = c.strip()
+                if c:
+                    groups[intensity].add(c)
+
+        sorted_groups = sorted(
+            groups.items(),
+            key=lambda x: self.INTENSITY_ORDER.get(x[0], 0),
+            reverse=True,
+        )
+        return [(intensity, sorted(counties)) for intensity, counties in sorted_groups]
+
+    # ────────── API 取得資料 ──────────
+
+    async def _fetch_dataset(
+        self, session: aiohttp.ClientSession, dataset_id: str, label: str
+    ) -> list[dict]:
+        url = f"{self.BASE_URL}/{dataset_id}?Authorization={self.api_key}"
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return []
+                data = await resp.json()
+                if data.get("success") != "true":
+                    return []
+                quakes = data.get("records", {}).get("Earthquake", [])
+                for q in quakes:
+                    q["_source"] = label
+                return quakes
+        except Exception:
+            return []
+
+    async def get_all_earthquakes(self) -> list[dict]:
+        results: list[dict] = []
+        async with aiohttp.ClientSession() as session:
+            for did, label in self.DATASETS.items():
+                results.extend(await self._fetch_dataset(session, did, label))
+        results.sort(
+            key=lambda q: q["EarthquakeInfo"]["OriginTime"],
+            reverse=True,
+        )
+        return results
+
+    # ────────── 列表 Embed ──────────
+
+    def _build_list_embed(self, quakes: list[dict]) -> discord.Embed:
+        top = quakes[:10]
+        max_mag = max(
+            float(q["EarthquakeInfo"]["EarthquakeMagnitude"]["MagnitudeValue"])
+            for q in top
+        )
+
+        embed = discord.Embed(
+            title="📋 最近地震報告",
+            color=self._mag_color(max_mag),
+        )
+        embed.set_author(
+            name="中央氣象署",
+            icon_url="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/"
+            "ROC_Central_Weather_Administration.svg/"
+            "1200px-ROC_Central_Weather_Administration.svg.png",
+        )
+
+        lines: list[str] = []
+        for i, q in enumerate(top, start=1):
+            info = q["EarthquakeInfo"]
+            mag = float(info["EarthquakeMagnitude"]["MagnitudeValue"])
+            loc = info["Epicenter"]["Location"]
+            unix_ts = self._to_unix(info["OriginTime"])
+            max_int = self._get_max_intensity(q)
+            emoji = self._mag_emoji(mag)
+
+            lines.append(
+                f"**`#{i:02d}`** {emoji} **M {mag}**　｜　最大震度 **{max_int}**\n"
+                f"　　　{loc}\n"
+                f"　　　🕐 <t:{unix_ts}:f>（<t:{unix_ts}:R>）"
+            )
+
+        embed.description = "\n\n".join(lines)
+        embed.set_footer(
+            text="輸入 /earthquake number:<編號> 查看完整報告　｜　僅顯示最近 10 筆"
+        )
+        return embed
+
+    # ────────── 詳細 Embed ──────────
+
+    def _build_detail_embed(self, quake: dict, number: int) -> discord.Embed:
+        info = quake["EarthquakeInfo"]
+        mag = float(info["EarthquakeMagnitude"]["MagnitudeValue"])
+        loc = info["Epicenter"]["Location"]
+        time_str = info["OriginTime"]
+        unix_ts = self._to_unix(time_str)
+        dep = info["FocalDepth"]
+        report_content = quake.get("ReportContent", "")
+        report_image = quake.get("ReportImageURI", "")
+        max_int = self._get_max_intensity(quake)
+        emoji = self._mag_emoji(mag)
+
+        # ── 標題 & 描述 ──
+        embed = discord.Embed(
+            title=f"{emoji} 地震報告 #{number:02d} ｜ {quake['_source']}",
+            description=report_content or None,
+            color=self._mag_color(mag),
+            timestamp=datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=timezone(timedelta(hours=8))
+            ),
+        )
+        embed.set_author(
+            name="中央氣象署",
+            icon_url="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/"
+            "ROC_Central_Weather_Administration.svg/"
+            "1200px-ROC_Central_Weather_Administration.svg.png",
+        )
+
+        # ── 📋 基本資訊 ──
+        embed.add_field(
+            name="📋 基本資訊",
+            value=(
+                f"> 🕐 時間： <t:{unix_ts}:F>（<t:{unix_ts}:R>）\n"
+                f"> 📍 震央： {loc}\n"
+                f"> 📏 深度： {dep} km"
+            ),
+            inline=False,
+        )
+
+        # ── 🚨 規模與震度 ──
+        embed.add_field(
+            name="🚨 規模與震度",
+            value=(
+                f"> 💥 芮氏規模： **{mag}**\n"
+                f"> 📈 最大震度： **{max_int}**"
+            ),
+            inline=False,
+        )
+
+        # ── 🌊 各地震度影響 ──
+        grouped = self._group_shaking_areas(quake)
+        if grouped:
+            lines: list[str] = []
+            for intensity, counties in grouped:
+                lines.append(f"> **{intensity}** ➔ {', '.join(counties)}")
+            text = "\n".join(lines)
+            if len(text) > 1024:
+                text = text[:1020] + " …"
+            embed.add_field(name="🌊 各地震度影響", value=text, inline=False)
+
+        # ── 報告圖 ──
+        if report_image:
+            embed.set_image(url=report_image)
+
+        embed.set_footer(text="資料來源：中央氣象署")
+        return embed
+
+    # ────────── 斜線指令 ──────────
+
+    @app_commands.command(name="earthquake", description="查詢最近的地震資訊")
+    @app_commands.describe(number="地震編號（1 = 最新，由近到遠排列）")
+    async def earthquake_cmd(
+        self, interaction: discord.Interaction, number: int = None
+    ):
+        await interaction.response.defer()
+        quakes = await self.get_all_earthquakes()
+
+        if not quakes:
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="❌ 無法取得地震資料",
+                    description="請確認 `CWA_API_KEY` 是否正確設定，或稍後再試。",
+                    color=0x95A5A6,
+                )
+            )
+            return
+
+        # 列表模式
+        if number is None:
+            await interaction.followup.send(embed=self._build_list_embed(quakes))
+            return
+
+        # 範圍檢查
+        if number < 1 or number > len(quakes):
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    description=f"❌ 請輸入 **1** ~ **{len(quakes)}** 之間的編號",
+                    color=0xE74C3C,
+                )
+            )
+            return
+
+        # 詳細模式
+        await interaction.followup.send(
+            embed=self._build_detail_embed(quakes[number - 1], number)
+        )
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Earthquake(bot))

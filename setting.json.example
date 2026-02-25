@@ -2,6 +2,7 @@
 	"token": "",
 	"openrouter_api_key": "",
 	"DAILY_CHANNEL_ID": 12345,
+	"CWA_API_KEY": "CWA-",
 	"moderator_ids": [
         123456789012345678, 
         987654321098765432
