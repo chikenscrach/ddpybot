@@ -1,10 +1,17 @@
+import asyncio
+import logging
+import time
+from datetime import datetime, timezone, timedelta
+
 import discord
 from discord import app_commands
 from discord.ext import commands
 import aiohttp
-import json
-from datetime import datetime, timezone, timedelta
+
 from core.classes import Cog_Extension
+from core.config import settings
+
+log = logging.getLogger(__name__)
 
 
 class Earthquake(Cog_Extension):
@@ -15,6 +22,7 @@ class Earthquake(Cog_Extension):
         "E-A0016-001": "小區域有感地震",
     }
     BASE_URL = "https://opendata.cwa.gov.tw/api/v1/rest/datastore"
+    CACHE_TTL = 60  # 秒；地震報告更新頻率低，快取可省下重複的 API 請求
 
     INTENSITY_ORDER = {
         "1級": 1, "2級": 2, "3級": 3, "4級": 4,
@@ -25,9 +33,20 @@ class Earthquake(Cog_Extension):
 
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
-        with open("setting.json", "r", encoding="utf-8") as f:
-            setting = json.load(f)
-        self.api_key: str = setting.get("CWA_API_KEY", "")
+        self.api_key: str = settings.get("CWA_API_KEY", "")
+        self.session: aiohttp.ClientSession | None = None
+        self._cache: list[dict] = []
+        self._cache_time: float = 0.0
+
+    # ✅ 整個 Cog 共用一個 ClientSession（重用連線池，比每次請求都新建快）
+    async def cog_load(self):
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=30)
+        )
+
+    async def cog_unload(self):
+        if self.session:
+            await self.session.close()
 
     # ────────── 工具方法 ──────────
 
@@ -105,33 +124,44 @@ class Earthquake(Cog_Extension):
 
     # ────────── API 取得資料 ──────────
 
-    async def _fetch_dataset(
-        self, session: aiohttp.ClientSession, dataset_id: str, label: str
-    ) -> list[dict]:
+    async def _fetch_dataset(self, dataset_id: str, label: str) -> list[dict]:
         url = f"{self.BASE_URL}/{dataset_id}?Authorization={self.api_key}"
         try:
-            async with session.get(url) as resp:
+            async with self.session.get(url) as resp:
                 if resp.status != 200:
+                    log.warning("CWA 資料集 %s 回應狀態碼 %d", dataset_id, resp.status)
                     return []
                 data = await resp.json()
                 if data.get("success") != "true":
+                    log.warning("CWA 資料集 %s 回傳失敗: %s", dataset_id, data.get("message", data))
                     return []
                 quakes = data.get("records", {}).get("Earthquake", [])
                 for q in quakes:
                     q["_source"] = label
                 return quakes
-        except Exception:
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            log.exception("取得 CWA 資料集 %s 失敗", dataset_id)
             return []
 
     async def get_all_earthquakes(self) -> list[dict]:
-        results: list[dict] = []
-        async with aiohttp.ClientSession() as session:
-            for did, label in self.DATASETS.items():
-                results.extend(await self._fetch_dataset(session, did, label))
+        # ✅ 快取尚未過期就直接回傳，避免每次指令都打兩次 API
+        now = time.monotonic()
+        if self._cache and now - self._cache_time < self.CACHE_TTL:
+            return self._cache
+
+        # ✅ 兩個資料集並行抓取，省下一半等待時間
+        dataset_results = await asyncio.gather(
+            *(self._fetch_dataset(did, label) for did, label in self.DATASETS.items())
+        )
+        results = [q for quakes in dataset_results for q in quakes]
         results.sort(
             key=lambda q: q["EarthquakeInfo"]["OriginTime"],
             reverse=True,
         )
+
+        if results:
+            self._cache = results
+            self._cache_time = now
         return results
 
     # ────────── 列表 Embed ──────────
@@ -249,7 +279,7 @@ class Earthquake(Cog_Extension):
     @app_commands.command(name="earthquake", description="查詢最近的地震資訊")
     @app_commands.describe(number="地震編號（1 = 最新，由近到遠排列）")
     async def earthquake_cmd(
-        self, interaction: discord.Interaction, number: int = None
+        self, interaction: discord.Interaction, number: int | None = None
     ):
         await interaction.response.defer()
         quakes = await self.get_all_earthquakes()

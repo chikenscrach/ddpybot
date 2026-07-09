@@ -1,25 +1,23 @@
+import datetime
+import logging
+import os
+import random
+import sqlite3
+from zoneinfo import ZoneInfo
+
 import discord
 from discord.ext import commands, tasks
 from discord import app_commands
+
 from core.classes import Cog_Extension
-import sqlite3
-import random
-import datetime
-import os
-import json
+from core.config import settings
 
-with open('setting.json', 'r', encoding = 'utf8') as jfile:
-    jdata = json.load(jfile)
-
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo
+log = logging.getLogger(__name__)
 
 TIMEZONE = ZoneInfo('Asia/Taipei')
 
 # ✅ 改成你要發送每日標的頻道 ID
-DAILY_CHANNEL_ID = jdata['DAILY_CHANNEL_ID']
+DAILY_CHANNEL_ID = settings['DAILY_CHANNEL_ID']
 
 
 class Task(Cog_Extension):
@@ -84,7 +82,7 @@ class Task(Cog_Extension):
     async def daily_ping(self):
         channel = self.bot.get_channel(DAILY_CHANNEL_ID)
         if channel is None:
-            print(f'⚠️ 找不到頻道 {DAILY_CHANNEL_ID}')
+            log.warning('⚠️ 找不到頻道 %s', DAILY_CHANNEL_ID)
             return
 
         guild = channel.guild
@@ -96,8 +94,12 @@ class Task(Cog_Extension):
 
         chosen = random.choice(members)
         self._add_ping(chosen.id)
-        
-        await channel.send(f'每日隨機標 {chosen.mention}')
+
+        # Bot 預設 allowed_mentions=none，這裡是真的要標人，需明確允許
+        await channel.send(
+            f'每日隨機標 {chosen.mention}',
+            allowed_mentions=discord.AllowedMentions(users=True),
+        )
 
     @daily_ping.before_loop
     async def before_daily_ping(self):

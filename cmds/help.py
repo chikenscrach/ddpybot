@@ -87,9 +87,7 @@ class HelpView(discord.ui.View):
 
 
 class Help(Cog_Extension):
-    def __init__(self, bot: commands.Bot):
-        super().__init__(bot)
-        self.bot.remove_command('help')
+    # main.py 已設定 help_command=None，這裡不需要再 remove_command('help')
 
     @commands.hybrid_command(name='help', description='查看所有指令')
     async def help_command(self, ctx: commands.Context):

@@ -1,15 +1,20 @@
-import discord
+import asyncio
+import json
+import logging
+
 from discord.ext import commands
 from discord import app_commands
-from core.classes import Cog_Extension
 import aiohttp
-import json
 
-with open('setting.json', 'r', encoding='utf8') as jfile:
-    jdata = json.load(jfile)
+from core.classes import Cog_Extension
+from core.config import settings
 
-OPENROUTER_API_KEY = jdata['openrouter_api_key']
+log = logging.getLogger(__name__)
+
+OPENROUTER_API_KEY = settings['openrouter_api_key']
 OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions'
+API_TIMEOUT = aiohttp.ClientTimeout(total=60)  # 避免 API 卡住時指令永遠等待
+MAX_HISTORY = 20  # 每位使用者保留的對話則數
 SYSTEM_PROMPT = """
 # Role
 你是一位部署在 Discord 上的專業級 AI 助手，擅長回答各種領域的問題。
@@ -55,6 +60,15 @@ class AI(Cog_Extension):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self.conversations: dict[int, list] = {}
+        self.session: aiohttp.ClientSession | None = None
+
+    # ✅ 整個 Cog 共用一個 ClientSession（重用連線池，比每次請求都新建快）
+    async def cog_load(self):
+        self.session = aiohttp.ClientSession(timeout=API_TIMEOUT)
+
+    async def cog_unload(self):
+        if self.session:
+            await self.session.close()
 
     # ==========================================
     #  呼叫 OpenRouter API
@@ -75,28 +89,29 @@ class AI(Cog_Extension):
             'messages': messages,
         }
 
-        async with aiohttp.ClientSession() as session:
-            try:
-                async with session.post(OPENROUTER_URL, headers=headers, json=payload) as resp:
-                    if resp.status != 200:
-                        error_text = await resp.text()
-                        raise OpenRouterError(resp.status, error_text)
+        try:
+            async with self.session.post(OPENROUTER_URL, headers=headers, json=payload) as resp:
+                if resp.status != 200:
+                    error_text = await resp.text()
+                    raise OpenRouterError(resp.status, error_text)
 
-                    data = await resp.json()
+                data = await resp.json()
 
-                    if 'error' in data:
-                        raise OpenRouterError(resp.status, json.dumps(data['error']))
+                if 'error' in data:
+                    raise OpenRouterError(resp.status, json.dumps(data['error']))
 
-                    if 'choices' not in data or not data['choices']:
-                        raise OpenRouterError(resp.status, "API 回傳格式異常 (無 choices)")
+                if 'choices' not in data or not data['choices']:
+                    raise OpenRouterError(resp.status, "API 回傳格式異常 (無 choices)")
 
-                    content = data['choices'][0]['message']['content']
-                    # OpenRouter 會在回應中告訴你實際用了哪個模型
-                    actual_model = data.get('model', 'unknown')
-                    return content, actual_model
+                content = data['choices'][0]['message']['content']
+                # OpenRouter 會在回應中告訴你實際用了哪個模型
+                actual_model = data.get('model', 'unknown')
+                return content, actual_model
 
-            except aiohttp.ClientError as e:
-                raise OpenRouterError(0, f"網路連線錯誤: {str(e)}")
+        except asyncio.TimeoutError:
+            raise OpenRouterError(0, "API 回應逾時，請稍後再試")
+        except aiohttp.ClientError as e:
+            raise OpenRouterError(0, f"網路連線錯誤: {str(e)}")
 
     # ==========================================
     #  工具方法
@@ -111,14 +126,21 @@ class AI(Cog_Extension):
             return {'role': 'user', 'content': text}
 
     def _get_messages(self, user_id: int, new_message: dict) -> list:
-        if user_id not in self.conversations:
-            self.conversations[user_id] = []
-        self.conversations[user_id].append(new_message)
-        if len(self.conversations[user_id]) > 20:
-            self.conversations[user_id] = self.conversations[user_id][-20:]
-        messages = [{'role': 'system', 'content': SYSTEM_PROMPT}]
-        messages.extend(self.conversations[user_id])
-        return messages
+        history = self.conversations.setdefault(user_id, [])
+        history.append(new_message)
+        self._trim_history(user_id)
+        return [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.conversations[user_id]
+
+    def _trim_history(self, user_id: int):
+        history = self.conversations[user_id]
+        if len(history) > MAX_HISTORY:
+            self.conversations[user_id] = history[-MAX_HISTORY:]
+
+    def _pop_failed_message(self, user_id: int):
+        """API 失敗時移除剛加入的使用者訊息，避免汙染後續對話"""
+        history = self.conversations.get(user_id)
+        if history:
+            history.pop()
 
     @staticmethod
     def _format_model_name(model_id: str) -> str:
@@ -148,30 +170,23 @@ class AI(Cog_Extension):
     async def ai_chat(self, ctx: commands.Context, *, message: str):
         await ctx.typing()
 
+        # 1. 收集圖片附件
+        image_urls = []
+        if ctx.message and ctx.message.attachments:
+            for att in ctx.message.attachments:
+                if att.content_type and att.content_type.startswith('image/'):
+                    image_urls.append(att.url)
+
+        # 2. 組裝訊息
+        user_msg = self._build_user_message(message, image_urls if image_urls else None)
+        messages = self._get_messages(ctx.author.id, user_msg)
+
+        # 3. 呼叫 API
         try:
-            # 1. 收集圖片附件
-            image_urls = []
-            if ctx.message and ctx.message.attachments:
-                for att in ctx.message.attachments:
-                    if att.content_type and att.content_type.startswith('image/'):
-                        image_urls.append(att.url)
-
-            # 2. 組裝訊息
-            user_msg = self._build_user_message(message, image_urls if image_urls else None)
-            messages = self._get_messages(ctx.author.id, user_msg)
-
-            # 3. 呼叫 API
             reply, actual_model = await self._call_api(messages)
 
-            # 4. 儲存對話紀錄
-            self.conversations[ctx.author.id].append({'role': 'assistant', 'content': reply})
-
-            # 5. 回覆（標頭顯示 OpenRouter 自動選的模型）
-            model_name = self._format_model_name(actual_model)
-            header = f'🤖 **{model_name}**\n'
-            await self._send_long_message(ctx, header + reply)
-
         except OpenRouterError as e:
+            self._pop_failed_message(ctx.author.id)
             error_msg = f"❌ API 錯誤: {e.message}"
 
             if e.status == 429:
@@ -185,14 +200,26 @@ class AI(Cog_Extension):
                 await ctx.send(error_msg, ephemeral=True)
             else:
                 await ctx.send(error_msg, delete_after=10)
+            return
 
-        except Exception as e:
-            print(f"系統錯誤: {e}")
+        except Exception:
+            self._pop_failed_message(ctx.author.id)
+            log.exception('AI 指令發生系統錯誤')
             msg = "❌ 機器人發生內部錯誤，請通知管理員。"
             if ctx.interaction:
                 await ctx.send(msg, ephemeral=True)
             else:
                 await ctx.send(msg, delete_after=10)
+            return
+
+        # 4. 儲存對話紀錄
+        self.conversations[ctx.author.id].append({'role': 'assistant', 'content': reply})
+        self._trim_history(ctx.author.id)
+
+        # 5. 回覆（標頭顯示 OpenRouter 自動選的模型）
+        model_name = self._format_model_name(actual_model)
+        header = f'🤖 **{model_name}**\n'
+        await self._send_long_message(ctx, header + reply)
 
     # ==========================================
     #  /ai_clear 指令

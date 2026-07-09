@@ -1,27 +1,28 @@
-import discord
-from discord.ext import commands
-from discord.utils import get
-from core.classes import Cog_Extension
-import json
-import random
+import logging
 
-with open('setting.json', 'r', encoding = 'utf8') as jfile:
-    jdata = json.load(jfile)
+from discord.ext import commands
+
+from core.classes import Cog_Extension
+
+log = logging.getLogger(__name__)
+
 
 class Event(Cog_Extension):
     @commands.Cog.listener()
     async def on_command_error(self, ctx, error):
         if isinstance(error, commands.CheckFailure):
             await ctx.send('🚫 **你沒有權限使用此指令！**', delete_after=5)
-        
+
         elif isinstance(error, commands.CommandNotFound):
             pass
-            
+
         else:
-            print(f'⚠️ 發生錯誤: {error}')
-    
+            log.error('指令 %s 發生錯誤', ctx.command, exc_info=error)
+
+    # ✅ 必須加上 @commands.Cog.listener()，Cog 裡的方法才會註冊為事件監聽器
+    @commands.Cog.listener()
     async def on_message(self, msg):
-        if msg.author == self.bot.user:
+        if msg.author.bot:  # 排除自己與其他機器人，避免互相觸發
             return
         if msg.content.endswith('的啦'):
             await msg.channel.send('原住民?')
