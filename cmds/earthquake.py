@@ -189,9 +189,7 @@ class Earthquake(Cog_Extension):
         )
         embed.set_author(
             name="中央氣象署",
-            icon_url="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/"
-            "ROC_Central_Weather_Administration.svg/"
-            "1200px-ROC_Central_Weather_Administration.svg.png",
+            icon_url="https://files.catbox.moe/t8elt5.png",
         )
 
         lines: list[str] = []
