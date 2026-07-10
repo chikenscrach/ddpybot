@@ -75,11 +75,20 @@ class Earthquake(Cog_Extension):
         return "🔵"
 
     @staticmethod
-    def _to_unix(time_str: str) -> int:
-        """將 CWA 時間字串 (UTC+8) 轉為 Unix Timestamp"""
-        dt = datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-        dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
-        return int(dt.timestamp())
+    def _parse_time(time_str: str) -> datetime:
+        """
+        解析 CWA 時間字串為帶時區的 datetime
+        同時支援 '2026-07-09 09:29:01' 與 ISO 8601 '2026-07-09T09:29:01+08:00' 兩種格式
+        """
+        dt = datetime.fromisoformat(time_str)
+        if dt.tzinfo is None:  # 沒帶時區的舊格式一律視為 UTC+8
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=8)))
+        return dt
+
+    @classmethod
+    def _to_unix(cls, time_str: str) -> int:
+        """將 CWA 時間字串轉為 Unix Timestamp"""
+        return int(cls._parse_time(time_str).timestamp())
 
     def _get_max_intensity(self, quake: dict) -> str:
         areas = quake.get("Intensity", {}).get("ShakingArea", [])
@@ -154,8 +163,9 @@ class Earthquake(Cog_Extension):
             *(self._fetch_dataset(did, label) for did, label in self.DATASETS.items())
         )
         results = [q for quakes in dataset_results for q in quakes]
+        # 兩個資料集的時間格式可能不同，改以解析後的 datetime 排序才準確
         results.sort(
-            key=lambda q: q["EarthquakeInfo"]["OriginTime"],
+            key=lambda q: self._parse_time(q["EarthquakeInfo"]["OriginTime"]),
             reverse=True,
         )
 
@@ -224,15 +234,11 @@ class Earthquake(Cog_Extension):
             title=f"{emoji} 地震報告 #{number:02d} ｜ {quake['_source']}",
             description=report_content or None,
             color=self._mag_color(mag),
-            timestamp=datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S").replace(
-                tzinfo=timezone(timedelta(hours=8))
-            ),
+            timestamp=self._parse_time(time_str),
         )
         embed.set_author(
             name="中央氣象署",
-            icon_url="https://upload.wikimedia.org/wikipedia/commons/thumb/a/a9/"
-            "ROC_Central_Weather_Administration.svg/"
-            "1200px-ROC_Central_Weather_Administration.svg.png",
+            icon_url="https://files.catbox.moe/t8elt5.png",
         )
 
         # ── 📋 基本資訊 ──
