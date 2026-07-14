@@ -1,11 +1,11 @@
 from discord.ext import commands
 from discord import app_commands
 
-from core.classes import Cog_Extension, is_manager
+from core.classes import Cog_Extension
+from utils.validators import is_manager
 
 
 class React(Cog_Extension):
-    # ✅ 用 @app_commands.describe 為斜線指令的參數加上說明
     # 提及安全：Bot 已在 main.py 設定 allowed_mentions=none，
     # 所以 say 不會被拿來 @everyone / @here
     @commands.hybrid_command(name='say', description='讓機器人替你說話')

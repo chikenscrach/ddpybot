@@ -1,0 +1,19 @@
+[project]
+name = "ddpybot"
+version = "1.0.0"
+description = "Discord ㄐㄐ人"
+requires-python = ">=3.10"
+dependencies = [
+    "discord.py>=2.6.4",
+    "aiohttp>=3.9",
+    "python-dotenv>=1.0",
+    "psutil>=5.9",
+    "tzdata>=2024.1",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "groq>=0.11",
+]
+
+[tool.uv]
+# 純應用程式專案，不需要打包安裝自身
+package = false

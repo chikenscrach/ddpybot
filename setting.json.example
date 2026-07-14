@@ -1,10 +1,9 @@
 {
-	"token": "",
-	"openrouter_api_key": "",
-	"DAILY_CHANNEL_ID": 12345,
-	"CWA_API_KEY": "CWA-",
-	"moderator_ids": [
-        123456789012345678, 
+    "DAILY_CHANNEL_ID": 12345,
+    "moderator_ids": [
+        123456789012345678,
         987654321098765432
-    ]
+    ],
+    "AI_PROVIDER": "openrouter",
+    "GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905"
 }

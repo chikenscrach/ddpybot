@@ -4,8 +4,11 @@ import os
 import discord
 from discord.ext import commands
 
-from core.config import settings
+from core.config import TOKEN
+from logs import setup_logging
 
+# ── 初始化日誌（console + logs/bot.log 自動旋轉）──
+setup_logging()
 log = logging.getLogger(__name__)
 
 intents = discord.Intents.default()
@@ -15,7 +18,7 @@ intents.members = True
 
 class DDBot(commands.Bot):
     async def setup_hook(self):
-        for filename in os.listdir('./cmds'):
+        for filename in sorted(os.listdir('./cmds')):
             if filename.endswith('.py') and not filename.startswith('_'):
                 await self.load_extension(f'cmds.{filename[:-3]}')
                 log.info('✅ 已載入: %s', filename[:-3])
@@ -69,4 +72,7 @@ async def sync(ctx):
 
 
 if __name__ == "__main__":
-    bot.run(settings['token'])
+    if not TOKEN:
+        raise SystemExit('未設定 TOKEN，請複製 .env.example 為 .env 並填入 Discord Bot Token。')
+    # 日誌已由 setup_logging() 統一設定，關閉 discord.py 內建 handler 避免重複輸出
+    bot.run(TOKEN, log_handler=None)

@@ -1,12 +1,12 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
+
 from core.classes import Cog_Extension
 
 
 class Main(Cog_Extension):
 
-    # ✅ hybrid_command = 前綴 + 斜線 都能用
+    # hybrid_command = 前綴 + 斜線 都能用
     @commands.hybrid_command(name='ping', description='查看機器人延遲')
     async def ping(self, ctx):
         await ctx.send(f'{round(self.bot.latency * 1000)} (ms)')

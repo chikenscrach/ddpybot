@@ -1,0 +1,11 @@
+services:
+  discord-bot:
+    build: .
+    container_name: ddpybot
+    restart: unless-stopped
+    volumes:
+      - ./data:/app/data                 # 讓資料庫可以永久保存在本機的 data/ 裡
+      - ./logs:/app/logs                 # 讓 logs 可以寫出到本機
+      - ./setting.json:/app/setting.json # 將本機的設定檔掛載進去
+    env_file:
+      - .env

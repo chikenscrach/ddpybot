@@ -1,9 +1,13 @@
-# --- 你指定的檔案 ---
-venv/
-.venv/
+# --- 敏感/執行時檔案 ---
+.env
 setting.json
 settings.json
-data/ping_count.db
+data/
+logs/bot.log*
+
+# --- 虛擬環境 ---
+venv/
+.venv/
 
 # --- Python 自動產生的暫存檔 ---
 __pycache__/
@@ -36,7 +40,7 @@ coverage.xml
 *.cover
 .pytest_cache/
 
-# --- IDE 設定 (如果你使用 VS Code 或 PyCharm) ---
+# --- IDE 設定 ---
 .vscode/
 .idea/
 

@@ -1,0 +1,45 @@
+# === Git ===
+.git
+.gitignore
+
+# === Docker 自身 ===
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# === 敏感檔案（絕對不打包進 image）===
+.env
+.env.example
+setting.json
+setting.json.example
+
+# === 執行時產生的資料（用 volume 掛載）===
+data/
+logs/*
+!logs/__init__.py
+
+# === Python ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# === 虛擬環境 ===
+venv/
+.venv/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+
+# === OS ===
+Thumbs.db
+Desktop.ini
+
+# === 文件 ===
+README.md
+LICENSE

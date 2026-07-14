@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
+
 from core.classes import Cog_Extension
 
 import platform
@@ -8,6 +9,9 @@ import sys
 import os
 import psutil
 from datetime import datetime, timezone
+
+from utils.embed_builder import progress_bar
+from utils.time_helper import fmt_uptime
 
 
 class Info(Cog_Extension):
@@ -17,27 +21,6 @@ class Info(Cog_Extension):
         self.start_time = datetime.now(timezone.utc)
         self.process = psutil.Process(os.getpid())
         self.process.cpu_percent()  # 第一次呼叫只是初始化，之後才有值
-
-    # ==================== 工具函式 ====================
-
-    @staticmethod
-    def _progress_bar(ratio: float, length: int = 10) -> str:
-        """產生文字進度條  █████░░░░░"""
-        filled = round(ratio * length)
-        return "█" * filled + "░" * (length - filled)
-
-    def _fmt_uptime(self) -> str:
-        """將 uptime 格式化為 '○ 天 ○ 小時 ○ 分鐘 ○ 秒'"""
-        ts = int((datetime.now(timezone.utc) - self.start_time).total_seconds())
-        d, ts = divmod(ts, 86_400)
-        h, ts = divmod(ts, 3_600)
-        m, s  = divmod(ts, 60)
-        parts = []
-        if d: parts.append(f"{d} 天")
-        if h: parts.append(f"{h} 小時")
-        if m: parts.append(f"{m} 分鐘")
-        parts.append(f"{s} 秒")
-        return " ".join(parts)
 
     # ==================== 建立 Embed ====================
 
@@ -91,20 +74,20 @@ class Info(Cog_Extension):
             ),
             inline=True,
         )
-        embed.add_field(name="\u200b", value="\u200b", inline=True)   # 佔位
+        embed.add_field(name="​", value="​", inline=True)   # 佔位
 
         # — 第二排 —
         embed.add_field(
             name="⏱️ 運行狀態",
             value=(
                 f"> **延遲：** {lat_emoji} {latency_ms} ms\n"
-                f"> **上線時間：** {self._fmt_uptime()}\n"
+                f"> **上線時間：** {fmt_uptime(self.start_time)}\n"
                 f"> **已載入模組：** {len(bot.cogs)} 個"
             ),
             inline=True,
         )
 
-        mem_bar = self._progress_bar(sys_mem.percent / 100)
+        mem_bar = progress_bar(sys_mem.percent / 100)
         embed.add_field(
             name="🖥️ 系統資源",
             value=(
@@ -114,7 +97,7 @@ class Info(Cog_Extension):
             ),
             inline=True,
         )
-        embed.add_field(name="\u200b", value="\u200b", inline=True)   # 佔位
+        embed.add_field(name="​", value="​", inline=True)   # 佔位
 
         # — 第三排（滿版） —
         embed.add_field(
