@@ -8,7 +8,7 @@ import time
 
 import aiohttp
 
-from utils.constants import EARTHQUAKE_DATASETS, EARTHQUAKE_BASE_URL, INTENSITY_ORDER
+from utils.constants import EARTHQUAKE_BASE_URL, EARTHQUAKE_DATASETS, INTENSITY_ORDER
 from utils.time_helper import parse_cwa_time
 
 log = logging.getLogger(__name__)
@@ -35,9 +35,10 @@ class EarthquakeAPI:
             await self.session.close()
 
     async def _fetch_dataset(self, dataset_id: str, label: str) -> list[dict]:
-        url = f"{EARTHQUAKE_BASE_URL}/{dataset_id}?Authorization={self.api_key}"
+        # API Key 走 header 認證，避免出現在 proxy / access log 的 URL 上
+        url = f"{EARTHQUAKE_BASE_URL}/{dataset_id}"
         try:
-            async with self.session.get(url) as resp:
+            async with self.session.get(url, headers={"Authorization": self.api_key}) as resp:
                 if resp.status != 200:
                     log.warning("CWA 資料集 %s 回應狀態碼 %d", dataset_id, resp.status)
                     return []

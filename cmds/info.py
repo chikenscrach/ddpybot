@@ -1,20 +1,19 @@
-import discord
-from discord.ext import commands
-from discord import app_commands
-
-from core.classes import Cog_Extension
-
+import os
 import platform
 import sys
-import os
-import psutil
 from datetime import datetime, timezone
 
+import discord
+import psutil
+from discord import app_commands
+from discord.ext import commands
+
+from core.classes import CogExtension
 from utils.embed_builder import progress_bar
 from utils.time_helper import fmt_uptime
 
 
-class Info(Cog_Extension):
+class Info(CogExtension):
 
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)

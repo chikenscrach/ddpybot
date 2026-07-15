@@ -1,12 +1,15 @@
 import logging
 
 import discord
-from discord.ext import commands
 from discord import app_commands
+from discord.ext import commands
 
-from core.classes import Cog_Extension
+from core.classes import CogExtension
 from services.ai_service import (
-    AIError, create_provider, build_user_message, format_model_name,
+    AIError,
+    build_user_message,
+    create_provider,
+    format_model_name,
 )
 from utils.constants import SYSTEM_PROMPT
 from utils.embed_builder import send_long_message
@@ -14,9 +17,10 @@ from utils.embed_builder import send_long_message
 log = logging.getLogger(__name__)
 
 MAX_HISTORY = 20  # 每位使用者保留的對話則數
+MAX_USERS = 200   # 最多同時保留幾位使用者的對話，超過踢掉最久沒互動的（防記憶體無限成長）
 
 
-class AI(Cog_Extension):
+class AI(CogExtension):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self.conversations: dict[int, list] = {}
@@ -32,9 +36,17 @@ class AI(Cog_Extension):
     #  對話管理
     # ==========================================
     def _get_messages(self, user_id: int, new_message: dict) -> list:
-        history = self.conversations.setdefault(user_id, [])
+        # LRU：先移除再重插，讓活躍使用者排到 dict 尾端（dict 保插入順序）
+        history = self.conversations.pop(user_id, [])
         history.append(new_message)
+        self.conversations[user_id] = history
         self._trim_history(user_id)
+
+        # 超過人數上限時，淘汰最久沒互動的使用者（dict 開頭）
+        while len(self.conversations) > MAX_USERS:
+            oldest = next(iter(self.conversations))
+            del self.conversations[oldest]
+
         return [{'role': 'system', 'content': SYSTEM_PROMPT}] + self.conversations[user_id]
 
     def _trim_history(self, user_id: int):

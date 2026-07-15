@@ -1,29 +1,23 @@
-import re
-import io
 import asyncio
+import io
 import logging
-from typing import List, Dict
+import re
 
+import aiohttp
 import discord
+from bs4 import BeautifulSoup
 from discord import app_commands
 from discord.ext import commands
-import aiohttp
 
-from core.classes import Cog_Extension
+from core.classes import CogExtension
 
 log = logging.getLogger(__name__)
 
+# 優先用 lxml（較快），異常時退回內建 html.parser（import 時偵測一次即可）
 try:
-    from bs4 import BeautifulSoup
-    HAS_BS4 = True
-    # 優先用 lxml，未安裝則用內建 html.parser (import 時偵測一次即可)
-    try:
-        BeautifulSoup("", "lxml")
-        PARSER = "lxml"
-    except Exception:
-        PARSER = "html.parser"
-except ImportError:
-    HAS_BS4 = False
+    BeautifulSoup("", "lxml")
+    PARSER = "lxml"
+except Exception:
     PARSER = "html.parser"
 
 EXAMPLE_URL = "https://www.ptt.cc/bbs/C_Chat/M.1782889510.A.9DF.html"
@@ -49,7 +43,7 @@ def normalize_ptt_url(url: str) -> str:
     return re.sub(r"^http://", "https://", url)
 
 
-def parse_ptt(html: str, url: str) -> Dict:
+def parse_ptt(html: str, url: str) -> dict:
     """
     解析 PTT 文章 HTML
     回傳 dict 包含:
@@ -59,9 +53,6 @@ def parse_ptt(html: str, url: str) -> Dict:
     - push_count, boo_count, arrow_count, total
     - pushes: List[{tag, userid, content, datetime}]
     """
-    if not HAS_BS4:
-        raise RuntimeError("缺少 beautifulsoup4，請執行 pip install beautifulsoup4 lxml")
-
     soup = BeautifulSoup(html, PARSER)
 
     # 判斷是否為 404 / 被刪除
@@ -95,7 +86,7 @@ def parse_ptt(html: str, url: str) -> Dict:
         div.decompose()
 
     # === 推文萃取，同樣取完即移除 ===
-    pushes: List[Dict] = []
+    pushes: list[dict] = []
     push_count = boo_count = arrow_count = 0
 
     for push_div in main.find_all("div", class_="push"):
@@ -157,7 +148,7 @@ def parse_ptt(html: str, url: str) -> Dict:
     }
 
 
-def build_main_embed(data: Dict, url: str) -> discord.Embed:
+def build_main_embed(data: dict, url: str) -> discord.Embed:
     # 顏色邏輯: 推多綠色，噓多紅色
     if data["boo_count"] > data["push_count"]:
         color = 0xE74C3C
@@ -202,7 +193,7 @@ def build_main_embed(data: Dict, url: str) -> discord.Embed:
     return embed
 
 
-def build_full_file(data: Dict, url: str) -> discord.File:
+def build_full_file(data: dict, url: str) -> discord.File:
     """組出完整內文 txt 附檔 (指令自動附檔與「完整內文檔」按鈕共用)"""
     pushes_text = "\n".join(
         f"{p['tag']} {p['userid']}: {p['content']} {p['datetime']}" for p in data["pushes"]
@@ -249,7 +240,7 @@ class AutoDisableView(discord.ui.View):
 class PushPaginatorView(AutoDisableView):
     PER_PAGE = 15
 
-    def __init__(self, data: Dict, author_id: int):
+    def __init__(self, data: dict, author_id: int):
         super().__init__(timeout=180)
         self.data = data
         self.pushes = data["pushes"]
@@ -317,7 +308,7 @@ class PushPaginatorView(AutoDisableView):
 
 
 class PTTMainView(AutoDisableView):
-    def __init__(self, article_data: Dict, url: str):
+    def __init__(self, article_data: dict, url: str):
         super().__init__(timeout=300)
         self.article_data = article_data
         self.url = url
@@ -340,7 +331,7 @@ class PTTMainView(AutoDisableView):
         await interaction.response.send_message(f"📄 **{self.article_data['title']}** 完整內文", file=file, ephemeral=True)
 
 
-class PTT(Cog_Extension):
+class PTT(CogExtension):
     """PTT 文章抓取"""
 
     # 連線層暫時性錯誤（DNS 失敗、TLS 握手瞬斷等）的最大嘗試次數
@@ -388,7 +379,7 @@ class PTT(Cog_Extension):
                     await asyncio.sleep(attempt)  # 1s、2s 漸進等待
             except aiohttp.ClientError as e:
                 log.warning(f"PTT fetch ClientError: {e}")
-                raise ValueError(f"網路連線錯誤: {e}")
+                raise ValueError(f"網路連線錯誤: {e}") from e
 
         if isinstance(last_err, asyncio.TimeoutError):
             raise ValueError(f"連線逾時（已嘗試 {self.FETCH_RETRIES} 次），請稍後再試")
@@ -397,12 +388,6 @@ class PTT(Cog_Extension):
     @app_commands.command(name="ptt", description="抓取PTT文章完整內文與推噓統計")
     @app_commands.describe(url=f"PTT 文章網址，例如 {EXAMPLE_URL}")
     async def ptt(self, interaction: discord.Interaction, url: str):
-        if not HAS_BS4:
-            return await interaction.response.send_message(
-                "❌ 機器人缺少 `beautifulsoup4`，請先安裝：`pip install beautifulsoup4 lxml`",
-                ephemeral=True
-            )
-
         # 網址驗證在 defer 之前完成，錯誤訊息才能維持 ephemeral
         try:
             url = normalize_ptt_url(url)

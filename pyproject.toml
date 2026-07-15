@@ -14,6 +14,25 @@ dependencies = [
     "groq>=0.11",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
 [tool.uv]
 # 純應用程式專案，不需要打包安裝自身
 package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "ASYNC"]
+# E501：中文字串常超過行寬限制，逐行硬折反而破壞可讀性
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

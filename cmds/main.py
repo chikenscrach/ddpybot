@@ -1,10 +1,10 @@
 import discord
 from discord.ext import commands
 
-from core.classes import Cog_Extension
+from core.classes import CogExtension
 
 
-class Main(Cog_Extension):
+class Main(CogExtension):
 
     # hybrid_command = 前綴 + 斜線 都能用
     @commands.hybrid_command(name='ping', description='查看機器人延遲')

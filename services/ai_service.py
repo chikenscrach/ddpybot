@@ -8,7 +8,7 @@ import logging
 
 import aiohttp
 
-from core.config import settings, OPENROUTER_API_KEY, GROQ_API_KEY
+from core.config import GROQ_API_KEY, OPENROUTER_API_KEY, settings
 from utils.constants import OPENROUTER_URL
 
 log = logging.getLogger(__name__)
@@ -79,9 +79,9 @@ class OpenRouterProvider:
                 return content, actual_model
 
         except asyncio.TimeoutError:
-            raise AIError(0, 'API 回應逾時，請稍後再試')
+            raise AIError(0, 'API 回應逾時，請稍後再試') from None
         except aiohttp.ClientError as e:
-            raise AIError(0, f'網路連線錯誤: {e}')
+            raise AIError(0, f'網路連線錯誤: {e}') from e
 
 
 class GroqProvider:
@@ -110,7 +110,7 @@ class GroqProvider:
         if self._client is None:
             raise AIError(401, '未設定 GROQ_API_KEY，請通知管理員檢查 .env')
 
-        from groq import APIStatusError, APIConnectionError
+        from groq import APIConnectionError, APIStatusError
         try:
             completion = await self._client.chat.completions.create(
                 model=self.model,
@@ -126,10 +126,10 @@ class GroqProvider:
 
         except APIStatusError as e:
             log.error('Groq API status error %s: %s', e.status_code, e.message)
-            raise AIError(e.status_code, str(e.message))
+            raise AIError(e.status_code, str(e.message)) from e
         except APIConnectionError as e:
             log.error('Groq connection error: %s', e)
-            raise AIError(0, '無法連接到 Groq API')
+            raise AIError(0, '無法連接到 Groq API') from e
 
 
 def create_provider():

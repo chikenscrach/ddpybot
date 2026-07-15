@@ -206,5 +206,14 @@ ddpybot/
 
 ---
 
+## 🧪 開發工具
+
+```bash
+uv run ruff check .    # Lint（規則見 pyproject.toml [tool.ruff]）
+uv run pytest          # 單元測試（tests/，涵蓋時間解析、地震分組、PTT 解析等純函式）
+```
+
+---
+
 > [!TIP]
 > **維護日誌**：機器人運行過程中，所有 `ERROR` 與 `INFO` 等級的事件會同步記錄在 `logs/bot.log` 中。檔案達到 5MB 時會自動循環備份（保留 3 份），確保存放空間不爆炸。

@@ -3,29 +3,35 @@ import logging
 import random
 
 import discord
-from discord.ext import commands, tasks
 from discord import app_commands
+from discord.ext import commands, tasks
 
-from core.classes import Cog_Extension
+from core.classes import CogExtension
 from core.config import settings
 from services.database import PingDatabase
-from utils.constants import COLOR_INFO, COLOR_GOLD
+from utils.constants import COLOR_GOLD, COLOR_INFO
 from utils.time_helper import TIMEZONE
 
 log = logging.getLogger(__name__)
 
-DAILY_CHANNEL_ID = settings['DAILY_CHANNEL_ID']
+# 防禦式讀取：缺欄位只停用每日標功能，不讓整個 cog 掛掉
+DAILY_CHANNEL_ID = settings.get('DAILY_CHANNEL_ID')
 
 
-class Task(Cog_Extension):
+class Task(CogExtension):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         self.db = PingDatabase()
-        self.daily_ping.start()
+        if DAILY_CHANNEL_ID:
+            self.daily_ping.start()
+        else:
+            log.warning('⚠️ 未設定 DAILY_CHANNEL_ID，每日隨機標排程停用（查詢指令仍可使用）')
 
     def cog_unload(self):
-        self.daily_ping.cancel()
-        self.db.close()
+        try:
+            self.daily_ping.cancel()
+        finally:
+            self.db.close()  # 即使 cancel 出錯也確保連線關閉
 
     # ==========================================
     #  每日 00:00 定時任務
@@ -35,8 +41,12 @@ class Task(Cog_Extension):
     async def daily_ping(self):
         channel = self.bot.get_channel(DAILY_CHANNEL_ID)
         if channel is None:
-            log.warning('⚠️ 找不到頻道 %s', DAILY_CHANNEL_ID)
-            return
+            # 快取未暖時 get_channel 會回 None，改直接向 API 查詢
+            try:
+                channel = await self.bot.fetch_channel(DAILY_CHANNEL_ID)
+            except discord.HTTPException:
+                log.warning('⚠️ 找不到頻道 %s', DAILY_CHANNEL_ID)
+                return
 
         guild = channel.guild
 
@@ -110,6 +120,8 @@ class Task(Cog_Extension):
     @commands.has_permissions(administrator=True)
     async def test_daily(self, ctx):
         """手動執行一次每日標記，方便測試"""
+        if not DAILY_CHANNEL_ID:
+            return await ctx.send('⚠️ 未設定 DAILY_CHANNEL_ID，無法觸發每日標。', ephemeral=True)
         await self.daily_ping()
         await ctx.send('✅ 已手動觸發每日標', ephemeral=True)
 

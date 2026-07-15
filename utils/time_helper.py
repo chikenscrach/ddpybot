@@ -1,7 +1,7 @@
 # ──────────────────────────────────────────────
 #  時間格式轉換工具
 # ──────────────────────────────────────────────
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 # 台灣時區（統一使用）
@@ -30,10 +30,13 @@ def fmt_uptime(start_time: datetime) -> str:
     ts = int((datetime.now(timezone.utc) - start_time).total_seconds())
     d, ts = divmod(ts, 86_400)
     h, ts = divmod(ts, 3_600)
-    m, s  = divmod(ts, 60)
+    m, s = divmod(ts, 60)
     parts = []
-    if d: parts.append(f"{d} 天")
-    if h: parts.append(f"{h} 小時")
-    if m: parts.append(f"{m} 分鐘")
+    if d:
+        parts.append(f"{d} 天")
+    if h:
+        parts.append(f"{h} 小時")
+    if m:
+        parts.append(f"{m} 分鐘")
     parts.append(f"{s} 秒")
     return " ".join(parts)

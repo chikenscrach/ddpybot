@@ -1,12 +1,12 @@
 import discord
 from discord.ext import commands
 
-from core.classes import Cog_Extension
+from core.classes import CogExtension
 from utils.constants import COG_EMOJI, COLOR_BLURPLE
 from views.pagination import PaginationView
 
 
-class Help(Cog_Extension):
+class Help(CogExtension):
     # main.py 已設定 help_command=None，這裡不需要再 remove_command('help')
 
     @commands.hybrid_command(name='help', description='查看所有指令')
@@ -61,7 +61,7 @@ class Help(Cog_Extension):
         if self.bot.user and self.bot.user.avatar:
             home.set_thumbnail(url=self.bot.user.avatar.url)
 
-        for cog_name, cog, prefix_cmds, pure_slash in cog_list:
+        for cog_name, _cog, prefix_cmds, pure_slash in cog_list:
             emoji = COG_EMOJI.get(cog_name, '📁')
 
             all_names = [f'`{c.name}`' for c in prefix_cmds]

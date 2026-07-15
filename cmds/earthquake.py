@@ -4,16 +4,16 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from core.classes import Cog_Extension
+from core.classes import CogExtension
 from core.config import CWA_API_KEY
 from services.earthquake_api import EarthquakeAPI, get_max_intensity, group_shaking_areas
-from utils.constants import mag_color, mag_emoji, CWA_ICON_URL, COLOR_ERROR
-from utils.time_helper import to_unix, parse_cwa_time
+from utils.constants import COLOR_ERROR, CWA_ICON_URL, mag_color, mag_emoji
+from utils.time_helper import parse_cwa_time, to_unix
 
 log = logging.getLogger(__name__)
 
 
-class Earthquake(Cog_Extension):
+class Earthquake(CogExtension):
     """中央氣象署地震資訊查詢"""
 
     def __init__(self, bot: commands.Bot):

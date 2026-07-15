@@ -1,5 +1,6 @@
 import logging
-import os
+import signal
+from pathlib import Path
 
 import discord
 from discord.ext import commands
@@ -11,6 +12,8 @@ from logs import setup_logging
 setup_logging()
 log = logging.getLogger(__name__)
 
+CMDS_DIR = Path(__file__).resolve().parent / 'cmds'
+
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -18,10 +21,15 @@ intents.members = True
 
 class DDBot(commands.Bot):
     async def setup_hook(self):
-        for filename in sorted(os.listdir('./cmds')):
-            if filename.endswith('.py') and not filename.startswith('_'):
-                await self.load_extension(f'cmds.{filename[:-3]}')
-                log.info('✅ 已載入: %s', filename[:-3])
+        # 逐個載入，單一 cog 失敗不影響其他模組
+        for file in sorted(CMDS_DIR.glob('*.py')):
+            if file.name.startswith('_'):
+                continue
+            try:
+                await self.load_extension(f'cmds.{file.stem}')
+                log.info('✅ 已載入: %s', file.stem)
+            except Exception:
+                log.exception('❌ 載入失敗: %s', file.stem)
 
         # ✅ 只在啟動時同步一次斜線指令，
         # 避免 on_ready 重連時重複同步觸發速率限制
@@ -71,8 +79,15 @@ async def sync(ctx):
     await ctx.send(f'🔄 已同步 {len(synced)} 個斜線指令')
 
 
+def _handle_sigterm(signum, frame):
+    # docker stop / systemd 會送 SIGTERM；轉成 KeyboardInterrupt 讓 discord.py
+    # 走既有的優雅關閉流程（close() 會逐一卸載 cogs，觸發 cog_unload 清理資源）
+    raise KeyboardInterrupt
+
+
 if __name__ == "__main__":
     if not TOKEN:
         raise SystemExit('未設定 TOKEN，請複製 .env.example 為 .env 並填入 Discord Bot Token。')
+    signal.signal(signal.SIGTERM, _handle_sigterm)
     # 日誌已由 setup_logging() 統一設定，關閉 discord.py 內建 handler 避免重複輸出
     bot.run(TOKEN, log_handler=None)

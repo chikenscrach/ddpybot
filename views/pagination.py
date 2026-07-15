@@ -1,8 +1,8 @@
 # ──────────────────────────────────────────────
 #  通用分頁器 View（翻頁按鈕）
 # ──────────────────────────────────────────────
+
 import discord
-from typing import Optional
 
 
 class PaginationView(discord.ui.View):
@@ -29,7 +29,7 @@ class PaginationView(discord.ui.View):
         self.pages = pages
         self.current_page = 0
         self.author = author
-        self.message: Optional[discord.Message] = None
+        self.message: discord.Message | None = None
         self._update_buttons()
 
     def _update_buttons(self):
