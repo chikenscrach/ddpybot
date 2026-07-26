@@ -24,6 +24,7 @@ ddpybot/
 │   └── config.py          # 🔑 配置載入：統一讀取 .env 與 setting.json
 ├── cmds/                  # 🎮 指令層：所有的功能模組 (Cogs)
 │   ├── ai.py              # AI 對話（支援多模型、圖片輸入、引用上下文）
+│   ├── danbooru.py        # Danbooru 隨機圖片搜尋（依頻道 NSFW 旗標開放分級）
 │   ├── earthquake.py      # 中央氣象署地震資訊查詢
 │   ├── ptt.py             # PTT 文章抓取（內文解析、推噓統計、分頁推文）
 │   ├── task.py            # 定時任務（每日隨機標人 + 排行榜）
@@ -71,6 +72,12 @@ ddpybot/
 | 指令 | 參數 | 說明 | 類型 | 權限 |
 | :--- | :--- | :--- | :--- | :--- |
 | `/ptt` | `url` | 抓取 PTT 文章內文、推噓統計，支援推文分頁瀏覽與完整內文下載 | Slash | 使用者 |
+
+### 🎨 Danbooru 圖片
+
+| 指令 | 參數 | 說明 | 類型 | 權限 |
+| :--- | :--- | :--- | :--- | :--- |
+| `/danbooru` | `tag` `[rating]` | 隨機搜尋 Danbooru 圖片（單一 tag，最多 5 張，每人 8 秒冷卻）；預設 General，Sensitive/Questionable/Explicit 分級僅限 NSFW 頻道或私訊 | Slash | 使用者 |
 
 ### ⏰ 社群互動
 
