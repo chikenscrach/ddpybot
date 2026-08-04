@@ -22,8 +22,31 @@ except Exception:
 
 EXAMPLE_URL = "https://www.ptt.cc/bbs/C_Chat/M.1782889510.A.9DF.html"
 
+PTTWEB_BASE = "https://www.pttweb.cc"
+
 # Embed description 上限 4096，保留緩衝
 BODY_DISPLAY_LIMIT = 3800
+
+# 內文與簽名檔/發信站資訊的分界標記
+BODY_SPLIT_MARKERS = ["※ 發信站:", "※ 文章網址:", "※ 編輯:"]
+
+
+class ArticleNotFoundError(ValueError):
+    """文章不存在或已被刪除 (404)，可觸發 pttweb.cc 備份 fallback"""
+
+
+def cut_body(full_raw: str) -> str:
+    """切出純內文（去掉 ※ 發信站之後的簽名檔區塊）"""
+    cut = min((full_raw.find(m) for m in BODY_SPLIT_MARKERS if m in full_raw), default=len(full_raw))
+    return full_raw[:cut].strip()
+
+
+def ptt_to_pttweb_url(url: str) -> str:
+    """將 ptt.cc 文章網址轉為 pttweb.cc 備份網址（pttweb 的文章 ID 不帶 .html）"""
+    m = re.search(r"/bbs/([^/]+)/([^/?#]+?)(?:\.html)?(?:[?#].*)?$", url)
+    if not m:
+        raise ValueError("無法從網址解析出看板與文章 ID")
+    return f"{PTTWEB_BASE}/bbs/{m.group(1)}/{m.group(2)}"
 
 
 def normalize_ptt_url(url: str) -> str:
@@ -58,14 +81,14 @@ def parse_ptt(html: str, url: str) -> dict:
     # 判斷是否為 404 / 被刪除
     title_tag = soup.find("title")
     if title_tag and "404" in title_tag.text:
-        raise ValueError("文章不存在或已被刪除 (404)")
+        raise ArticleNotFoundError("文章不存在或已被刪除 (404)")
 
     main = soup.find(id="main-content")
     if not main:
         # 有可能是 over18 攔截頁
         if "over18" in html.lower() or "年滿十八歲" in html:
             raise ValueError("此為限制級看板，驗證失敗。請確認網址正確或稍後再試 (已自動帶 over18=1)")
-        raise ValueError("找不到文章主體，可能是已被刪除或網址錯誤")
+        raise ArticleNotFoundError("找不到文章主體，可能是已被刪除或網址錯誤")
 
     # === Meta 萃取，取完即移除，之後取內文才乾淨 ===
     author = board = title = time_str = ""
@@ -124,11 +147,7 @@ def parse_ptt(html: str, url: str) -> dict:
 
     # 此時 main-content 內剩餘的是內文 + 簽名 + ※ 發信站 等
     full_raw = main.get_text().strip()
-
-    # 切出純內文 (去掉 ※ 發信站之後)
-    split_markers = ["※ 發信站:", "※ 文章網址:", "※ 編輯:"]
-    cut = min((full_raw.find(m) for m in split_markers if m in full_raw), default=len(full_raw))
-    body = full_raw[:cut].strip()
+    body = cut_body(full_raw)
 
     total = push_count + boo_count + arrow_count
 
@@ -148,6 +167,102 @@ def parse_ptt(html: str, url: str) -> dict:
     }
 
 
+def parse_pttweb(html: str, url: str) -> dict:
+    """
+    解析 pttweb.cc 備份頁 HTML（伺服器端渲染的 Vuetify 頁面），
+    回傳與 parse_ptt 相同結構的 dict，並多帶 backup=True 標記。
+
+    注意：pttweb 對留言很多的文章只會先渲染部分推文（其餘靠 JS 載入），
+    推噓統計改採頁首「推噓」欄位的數字，pushes 列表則是抓得到的部分。
+    """
+    soup = BeautifulSoup(html, PARSER)
+
+    headline = soup.find("span", itemprop="headline")
+    body_blocks = soup.select("div.e7-main-content")
+    if not headline or not body_blocks:
+        raise ArticleNotFoundError("pttweb.cc 上沒有這篇文章的備份")
+
+    title = headline.get_text(strip=True)
+
+    # === 頁首 metadata：e7-head-label / e7-head-content 成對出現（元素可能是 span 或 div） ===
+    author = board = time_str = ""
+    push_count = boo_count = arrow_count = None
+    for label in soup.select(".e7-head-label"):
+        key = label.get_text(strip=True)
+        content_el = label.find_next(class_="e7-head-content")
+        val = content_el.get_text(" ", strip=True) if content_el else ""
+        if key == "看板":
+            board = val
+        elif key == "作者":
+            author = val
+        elif key == "時間":
+            # 例: "4周前 發表 (2026/07/01 15:05) , 編輯" → 取括號內的絕對時間
+            m = re.search(r"\((\d{4}/\d{1,2}/\d{1,2} \d{1,2}:\d{2})\)", val)
+            time_str = m.group(1) if m else val
+        elif key == "推噓":
+            # 例: "19 ( 19 推 0 噓 4 → )"，get_text 合併節點時會插入空白
+            m = re.search(r"(\d+)\s*推\s*(\d+)\s*噓\s*(\d+)\s*→", val)
+            if m:
+                push_count, boo_count, arrow_count = (int(x) for x in m.groups())
+
+    # === 內文：文章本體被切成多個 e7-main-content 區塊，依序串回 ===
+    full_raw = "\n".join(b.get_text() for b in body_blocks).strip()
+    body = cut_body(full_raw)
+
+    # === 推文：每列是含 e7-left(推/噓/→) 與 e7-right(作者/內容/時間) 的容器 ===
+    pushes: list[dict] = []
+    counted = {"推": 0, "噓": 0, "→": 0}
+    for left in soup.select("div.e7-left"):
+        row = left.parent
+        if not row:
+            continue
+        author_div = row.select_one(".e7-author")
+        msg_div = row.select_one(".e7-recommend-message")
+        if not author_div and not msg_div:
+            continue  # 非推文列的版面容器
+
+        tag_raw = left.get_text(strip=True)
+        # ipdatetime2 的第一個 span 是乾淨的 "MM/DD HH:MM"，ipdatetime1 會混入相對時間與樓層
+        dt_span = row.select_one(".e7-ipdatetime2 span") or row.select_one(".e7-ipdatetime1 span")
+        ipdatetime = dt_span.get_text(strip=True).rstrip(",").strip() if dt_span else ""
+
+        if "推" in tag_raw:
+            counted["推"] += 1
+        elif "噓" in tag_raw:
+            counted["噓"] += 1
+        else:
+            counted["→"] += 1
+
+        pushes.append({
+            "tag": tag_raw,
+            "userid": author_div.get_text(strip=True) if author_div else "?",
+            "content": msg_div.get_text(strip=True) if msg_div else "",
+            "datetime": ipdatetime
+        })
+
+    # 頁首統計缺漏時退回實際數到的推文數
+    if push_count is None:
+        push_count, boo_count, arrow_count = counted["推"], counted["噓"], counted["→"]
+
+    total = push_count + boo_count + arrow_count
+
+    return {
+        "url": url,
+        "author": author,
+        "board": board,
+        "title": title or "PTT 文章",
+        "time": time_str,
+        "body": body,
+        "full_raw": full_raw,
+        "push_count": push_count,
+        "boo_count": boo_count,
+        "arrow_count": arrow_count,
+        "total": total,
+        "pushes": pushes,
+        "backup": True
+    }
+
+
 def build_main_embed(data: dict, url: str) -> discord.Embed:
     # 顏色邏輯: 推多綠色，噓多紅色
     if data["boo_count"] > data["push_count"]:
@@ -163,6 +278,9 @@ def build_main_embed(data: dict, url: str) -> discord.Embed:
         display_body = body[:BODY_DISPLAY_LIMIT] + "\n\n...（內文過長，已截斷，完整版請看附檔）"
     else:
         display_body = body
+
+    if data.get("backup"):
+        display_body = "⚠️ **原文已被刪除，以下為 pttweb.cc 備份**\n\n" + display_body
 
     embed = discord.Embed(
         title=data["title"][:256],  # title limit 256
@@ -186,6 +304,8 @@ def build_main_embed(data: dict, url: str) -> discord.Embed:
     )
 
     footer_text = f"PTT {data['board']} | 推:{data['push_count']} 噓:{data['boo_count']} →:{data['arrow_count']}"
+    if data.get("backup"):
+        footer_text += " | 資料來源: pttweb.cc 備份"
     if truncated:
         footer_text += " | 內文已截斷"
     embed.set_footer(text=footer_text)
@@ -199,7 +319,9 @@ def build_full_file(data: dict, url: str) -> discord.File:
         f"{p['tag']} {p['userid']}: {p['content']} {p['datetime']}" for p in data["pushes"]
     )
     sep = "-" * 30
+    source_line = "來源: pttweb.cc 備份 (原文已被刪除)\n" if data.get("backup") else ""
     combined = (
+        f"{source_line}"
         f"標題: {data['title']}\n"
         f"看板: {data['board']}\n"
         f"作者: {data['author']}\n"
@@ -314,7 +436,8 @@ class PTTMainView(AutoDisableView):
         self.url = url
 
         # 連結按鈕 (Link Button 必須用 add_item)
-        self.add_item(discord.ui.Button(label="開啟原文", url=url, style=discord.ButtonStyle.link, emoji="🔗"))
+        link_label = "開啟備份 (pttweb)" if article_data.get("backup") else "開啟原文"
+        self.add_item(discord.ui.Button(label=link_label, url=url, style=discord.ButtonStyle.link, emoji="🔗"))
 
     @discord.ui.button(label="推文列表", style=discord.ButtonStyle.primary, emoji="💬")
     async def show_pushes(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -361,7 +484,7 @@ class PTT(CogExtension):
             try:
                 async with self.session.get(url, headers=headers, cookies=cookies) as resp:
                     if resp.status == 404:
-                        raise ValueError("找不到此文章 (404)，可能已被刪除或網址錯誤")
+                        raise ArticleNotFoundError("找不到此文章 (404)，可能已被刪除或網址錯誤")
                     if resp.status != 200:
                         raise ValueError(f"抓取失敗，HTTP狀態碼: {resp.status}")
                     html = await resp.text()
@@ -396,23 +519,37 @@ class PTT(CogExtension):
 
         await interaction.response.defer(thinking=True)
 
+        display_url = url
         try:
             html = await self._fetch_html(url)
             # 爆文的 HTML 解析可能耗時，丟到 thread 避免卡住 event loop
             data = await asyncio.to_thread(parse_ptt, html, url)
+        except ArticleNotFoundError:
+            # 原站被刪文 → 改抓 pttweb.cc 備份
+            try:
+                display_url = ptt_to_pttweb_url(url)
+                html = await self._fetch_html(display_url)
+                data = await asyncio.to_thread(parse_pttweb, html, display_url)
+            except ArticleNotFoundError:
+                return await interaction.followup.send("❌ 文章已被刪除 (404)，且 pttweb.cc 上也沒有備份。")
+            except ValueError as ve:
+                return await interaction.followup.send(f"❌ 原文已被刪除 (404)，讀取 pttweb.cc 備份失敗：{ve}")
+            except Exception:
+                log.exception("pttweb 備份解析失敗")
+                return await interaction.followup.send("❌ 原文已被刪除 (404)，讀取 pttweb.cc 備份時發生未知錯誤。")
         except ValueError as ve:
             return await interaction.followup.send(f"❌ {ve}")
         except Exception:
             log.exception("PTT 解析失敗")
             return await interaction.followup.send("❌ 解析文章時發生未知錯誤，請通知管理員。")
 
-        embed = build_main_embed(data, url)
-        view = PTTMainView(data, url)
+        embed = build_main_embed(data, display_url)
+        view = PTTMainView(data, display_url)
 
         files = []
         # 若內文超過顯示上限，自動附上完整文字檔
         if len(data["body"]) > BODY_DISPLAY_LIMIT or len(data["full_raw"]) > BODY_DISPLAY_LIMIT:
-            files.append(build_full_file(data, url))
+            files.append(build_full_file(data, display_url))
 
         if files:
             msg = await interaction.followup.send(embed=embed, view=view, files=files)
