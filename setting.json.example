@@ -5,5 +5,6 @@
         987654321098765432
     ],
     "AI_PROVIDER": "openrouter",
+    "OPENROUTER_MODEL": "openrouter/free",
     "GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905"
 }

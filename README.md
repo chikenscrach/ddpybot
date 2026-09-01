@@ -150,6 +150,7 @@ ddpybot/
 | `DAILY_CHANNEL_ID` | 每日隨機標訊息發送的頻道 ID | - |
 | `moderator_ids` | 擁有機器人管理級權限的使用者 ID 清單 | `[]` |
 | `AI_PROVIDER` | AI 供應商選擇：`openrouter` 或 `groq` | `openrouter` |
+| `OPENROUTER_MODEL` | OpenRouter 使用的語言模型名稱；`openrouter/free` 會自動路由 | `openrouter/free` |
 | `GROQ_MODEL` | Groq 使用的語言模型名稱 | `moonshotai/kimi-k2-instruct-0905` |
 
 ---

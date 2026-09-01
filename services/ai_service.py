@@ -14,6 +14,7 @@ from utils.constants import OPENROUTER_URL
 log = logging.getLogger(__name__)
 
 API_TIMEOUT = aiohttp.ClientTimeout(total=60)  # 避免 API 卡住時指令永遠等待
+DEFAULT_OPENROUTER_MODEL = 'openrouter/free'
 DEFAULT_GROQ_MODEL = 'moonshotai/kimi-k2-instruct-0905'
 
 
@@ -27,12 +28,13 @@ class AIError(Exception):
 
 
 class OpenRouterProvider:
-    """OpenRouter：'openrouter/free' 自動路由到可用的免費模型"""
+    """OpenRouter：使用 setting.json 的 OPENROUTER_MODEL 指定模型"""
 
     name = 'OpenRouter'
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str):
         self.api_key = api_key
+        self.model = model
         self.session: aiohttp.ClientSession | None = None
 
     # 整個 Cog 共用一個 ClientSession（重用連線池，比每次請求都新建快）
@@ -55,7 +57,7 @@ class OpenRouterProvider:
             'X-Title': 'Discord Bot',
         }
         payload = {
-            'model': 'openrouter/free',
+            'model': self.model,
             'messages': messages,
         }
 
@@ -139,7 +141,8 @@ def create_provider():
         return GroqProvider(GROQ_API_KEY, settings.get('GROQ_MODEL', DEFAULT_GROQ_MODEL))
     if provider != 'openrouter':
         log.warning("未知的 AI_PROVIDER '%s'，改用 openrouter", provider)
-    return OpenRouterProvider(OPENROUTER_API_KEY)
+    model = settings.get('OPENROUTER_MODEL', DEFAULT_OPENROUTER_MODEL)
+    return OpenRouterProvider(OPENROUTER_API_KEY, model)
 
 
 def build_user_message(text: str, image_urls: list[str] | None = None) -> dict:
