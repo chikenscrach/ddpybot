@@ -56,13 +56,14 @@ class Task(CogExtension):
             return
 
         chosen = random.choice(members)
-        self.db.add_ping(chosen.id)
 
         # Bot 預設 allowed_mentions=none，這裡是真的要標人，需明確允許
         await channel.send(
             f'每日隨機標 {chosen.mention}',
             allowed_mentions=discord.AllowedMentions(users=True),
         )
+        # 訊息成功送出後才累計次數並記錄時間，避免把發送失敗算成被標記
+        self.db.add_ping(chosen.id)
 
     @daily_ping.before_loop
     async def before_daily_ping(self):
@@ -85,15 +86,41 @@ class Task(CogExtension):
         )
         await ctx.send(embed=embed)
 
+    @commands.hybrid_command(name='ping_stats', description='查看某位成員被標記的比例及上次被標記時間')
+    @app_commands.describe(member='要查詢的成員（不填則查詢自己）')
+    async def ping_stats(self, ctx, member: discord.Member = None):
+        member = member or ctx.author
+        count = self.db.get_count(member.id)
+        total = self.db.get_total_count()
+        percentage = count / total * 100 if total else 0.0
+        last_ping = self.db.get_last_ping(member.id)
+
+        if last_ping is not None:
+            last_ping_text = f'<t:{last_ping}:F>（<t:{last_ping}:R>）'
+        elif count:
+            last_ping_text = '尚無時間紀錄（舊資料未記錄時間）'
+        else:
+            last_ping_text = '尚未被標記'
+
+        embed = discord.Embed(
+            title='📊 每日隨機標個人統計',
+            description=member.mention,
+            color=COLOR_INFO,
+        )
+        embed.add_field(name='被標記次數', value=f'**{count}** 次')
+        embed.add_field(name='標記總數', value=f'**{total}** 次')
+        embed.add_field(name='被標記比例', value=f'**{percentage:.2f}%**')
+        embed.add_field(name='上次被標記時間', value=last_ping_text, inline=False)
+        embed.set_footer(text='被標記比例 = 個人被標記次數 ÷ 標記總數 × 100%')
+        await ctx.send(embed=embed)
+
     @commands.hybrid_command(name='ping_rank', description='查看被標次數排行榜')
     @app_commands.describe(top='顯示前幾名（預設 10）')
     async def ping_rank(self, ctx, top: int = 10):
         top = max(1, min(top, 25))  # 限制 1~25
 
         rows = self.db.get_leaderboard(top)
-        if not rows:
-            await ctx.send('📊 目前還沒有任何人被標過！')
-            return
+        total = self.db.get_total_count()
 
         medals = ['🥇', '🥈', '🥉']
         description = ''
@@ -106,10 +133,11 @@ class Task(CogExtension):
 
         embed = discord.Embed(
             title='🏆 每日隨機標排行榜',
-            description=description,
+            description=description or '📊 目前還沒有任何人被標過！',
             color=COLOR_GOLD,
             timestamp=datetime.datetime.now(tz=TIMEZONE),
         )
+        embed.add_field(name='標記總數', value=f'**{total}** 次', inline=False)
         await ctx.send(embed=embed)
 
     # ==========================================
