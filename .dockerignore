@@ -43,3 +43,9 @@ Desktop.ini
 # === 文件 ===
 README.md
 LICENSE
+
+# === 開發與交付輔助檔案 ===
+AGENTS.md
+suggestion.md
+*.patch
+msg.txt

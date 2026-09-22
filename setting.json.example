@@ -6,5 +6,20 @@
     ],
     "AI_PROVIDER": "openrouter",
     "OPENROUTER_MODEL": "openrouter/free",
-    "GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905"
+    "GROQ_MODEL": "moonshotai/kimi-k2-instruct-0905",
+    "MUSIC": {
+        "cache_dir": "data/music",
+        "max_cache_mb": 1024,
+        "max_file_mb": 100,
+        "max_duration_seconds": 1800,
+        "max_queue_size": 100,
+        "max_playlist_items": 50,
+        "empty_channel_grace_seconds": 10,
+        "auto_cleanup": true,
+        "cache_ttl_hours": 168,
+        "cleanup_interval_seconds": 600,
+        "download_timeout_seconds": 300,
+        "ffmpeg_executable": "ffmpeg",
+        "js_runtime": "deno"
+    }
 }

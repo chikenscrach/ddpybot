@@ -25,6 +25,7 @@ ddpybot/
 ├── cmds/                  # 🎮 指令層：所有的功能模組 (Cogs)
 │   ├── ai.py              # AI 對話（支援多模型、圖片輸入、引用上下文）
 │   ├── danbooru.py        # Danbooru 隨機圖片搜尋（依頻道 NSFW 旗標開放分級）
+│   ├── music.py           # YouTube 音樂播放、佇列與互動控制
 │   ├── earthquake.py      # 中央氣象署地震資訊查詢
 │   ├── ptt.py             # PTT 文章抓取（內文解析、推噓統計、分頁推文、刪文時自動改抓 pttweb.cc 備份）
 │   ├── task.py            # 定時任務（每日隨機標人 + 排行榜）
@@ -35,6 +36,8 @@ ddpybot/
 │   └── event.py           # 訊息監聽與自動回覆
 ├── services/              # 🌐 服務層：封裝業務邏輯與外部 API
 │   ├── ai_service.py      # AI 供應商封裝（OpenRouter / Groq 雙引擎）
+│   ├── music_cache.py     # yt-dlp 下載快取、容量與自動清理
+│   ├── music_service.py   # 語音連線、播放佇列與空頻道離開
 │   ├── earthquake_api.py  # 中央氣象署地震 API（並行抓取 + 60 秒快取）
 │   └── database.py        # SQLite 資料庫封裝 (PingDatabase)
 ├── utils/                 # 🔧 工具層：跨模組通用工具
@@ -43,6 +46,7 @@ ddpybot/
 │   ├── embed_builder.py   # 進度條生成與超長訊息分段發送
 │   └── validators.py      # 管理員權限檢查 (is_manager)
 ├── views/                 # 🖱️ UI 層：Discord 互動元件
+│   ├── music.py           # 音樂控制面板、播放清單確認與待播分頁
 │   └── pagination.py      # 通用分頁組件 (⏪◀ 頁碼 ▶⏩)
 ├── logs/                  # 📝 日誌層：自動旋轉日誌系統
 │   └── __init__.py        # setup_logging()：Console + 檔案雙輸出
@@ -53,6 +57,20 @@ ddpybot/
 ---
 
 ## 🛠️ 指令全清單
+
+### 🎵 音樂播放
+
+| 指令 | 參數 | 說明 | 類型 | 權限 |
+| :--- | :--- | :--- | :--- | :--- |
+| `/play` | `url` | 加入 YouTube 影片；播放清單會先詢問加入整份、只加入目前影片或取消 | Slash | 使用者 |
+| `/playnext` | `url` | 將影片插入目前歌曲之後，不中斷正在播放的歌曲 | Slash | 使用者 |
+| `/queue` | - | 顯示目前伺服器的待播清單（暫時回覆） | Slash | 使用者 |
+| `/leave` | - | 停止播放、清空待播清單並讓機器人離開語音頻道 | Slash | 使用者 |
+| `/musiccache` | `action` | `status` 查看快取；`clear` 手動清理快取（僅機器人擁有者） | Slash | 機器人擁有者 |
+
+播放中的 Embed 會附上暫停／繼續、停止、跳過與待播清單按鈕。停止只會清空播放與待播清單，機器人仍留在語音頻道；`/leave` 才會離開。當語音頻道沒有真人成員時，機器人會等待 `empty_channel_grace_seconds` 秒，若期間有人回來就取消離開計時。
+
+目前播放採先下載到本機再交給 FFmpeg，因此第一首歌需要等待下載；不支援直播。YouTube 的驗證、限流或 PO Token 變更也可能使 yt-dlp 無法擷取特定網址。
 
 ### 🤖 AI 對話
 
@@ -158,6 +176,28 @@ ddpybot/
 | `OPENROUTER_MODEL` | OpenRouter 使用的語言模型名稱；`openrouter/free` 會自動路由 | `openrouter/free` |
 | `GROQ_MODEL` | Groq 使用的語言模型名稱 | `moonshotai/kimi-k2-instruct-0905` |
 
+音樂設定放在 `MUSIC` 物件內（完整範例見 `setting.json.example`）。設定在啟動時讀取，修改後請重啟機器人。
+
+| 欄位 | 說明 | 預設值 |
+| :--- | :--- | :--- |
+| `cache_dir` | 音檔快取目錄；Docker 會隨 `/app/data` volume 持久化 | `data/music` |
+| `max_cache_mb` | 快取容量上限；下載前預留單檔上限的空間，自動清理開啟時淘汰最久未使用的音檔，仍不足則拒絕下載 | `1024` |
+| `max_file_mb` | 單一音檔大小上限 | `100` |
+| `max_duration_seconds` | 單曲最長秒數 | `1800` |
+| `max_queue_size` | 每個伺服器的待播歌曲數上限 | `100` |
+| `max_playlist_items` | 一次接受的播放清單歌曲數上限 | `50` |
+| `empty_channel_grace_seconds` | 沒有真人成員時離開前的等待秒數 | `10` |
+| `auto_cleanup` | 是否啟用週期性 TTL／LRU 自動清理 | `true` |
+| `cache_ttl_hours` | 自動清理時，未釘選音檔的保存時間 | `168` |
+| `cleanup_interval_seconds` | 自動清理檢查間隔 | `600` |
+| `download_timeout_seconds` | yt-dlp 單次下載逾時秒數 | `300` |
+| `ffmpeg_executable` | FFmpeg 執行檔名稱或完整路徑 | `ffmpeg` |
+| `js_runtime` | yt-dlp JavaScript runtime | `deno` |
+
+快取檔案會跨重啟保留，伺服器的待播清單只存在記憶體中，重啟後會清空。`auto_cleanup=false` 時檔案會保留到擁有者執行 `/musiccache clear`，空間不足就拒絕新下載；手動清理會跳過目前播放、下載中或預載保留的檔案。請使用專用的 `cache_dir`，勿混放其他音檔。
+
+下載前會預留 `max_file_mb` 的空間，因此剩餘容量不足此值時，即使新歌曲較小也可能被拒絕。下載中每 0.25 秒檢查音檔與總容量，超限便終止下載並清除未完成檔案；檢查間隔內可能短暫超出上限。`max_file_mb` 不可大於 `max_cache_mb`。
+
 ---
 
 ## 🚀 部署教學
@@ -177,9 +217,13 @@ ddpybot/
     > 💡 **進階說明**：
     > `docker-compose.yml` 預設使用本地端 `Dockerfile` 構建映像檔。運行後，機器人的資料庫檔與日誌檔會分別掛載到本機的 `./data` 與 `./logs` 目錄中，實現資料持久化。`setting.json` 也會掛載進容器，修改後重啟即可生效。
 
+映像檔以 Debian Bookworm 為基礎，內含 FFmpeg（同時提供 `ffmpeg` 與 `ffprobe`）以及固定版本的官方 Deno binary。音樂檔會寫入 `./data/music`，請把這個目錄視為持久化資料並預留足夠空間。
+
 ### 💻 方式二：傳統本機部署
 
 1.  **環境準備**：建議使用 Python 3.12 以上版本，並安裝 [uv](https://docs.astral.sh/uv/) 套件管理工具。
+    - `ffmpeg` 與 `ffprobe` 必須在 `PATH` 中（或在 `MUSIC.ffmpeg_executable` 指定完整路徑）。
+    - 建議安裝 [Deno](https://docs.deno.com/runtime/) 並讓 `deno` 在 `PATH` 中，供 yt-dlp 的 YouTube JavaScript challenge 解譯使用。
 2.  **安裝依賴**：
     ```bash
     uv sync
@@ -199,6 +243,10 @@ ddpybot/
     > python main.py
     > ```
 
+### 🔐 Discord 權限與 Intent
+
+機器人在文字頻道需要 `View Channel`、`Send Messages` 與 `Embed Links`；在語音頻道需要 `View Channel`、`Connect` 與 `Speak`。請在 Bot 設定與程式的 intents 中保留 `voice_states`（這是 discord.py 的預設 intent），否則無法偵測空頻道並在無人時離開。
+
 ---
 
 ## 📈 技術棧
@@ -210,6 +258,9 @@ ddpybot/
 | **AI 供應商** | OpenRouter / Groq | 雙引擎 AI 對話服務 |
 | **AI SDK** | `groq` | Groq 官方 Python SDK |
 | **網頁解析** | `beautifulsoup4` + `lxml` | PTT 文章 HTML 解析 |
+| **音樂擷取** | `yt-dlp[default]` | YouTube 音訊下載與 metadata 擷取 |
+| **音訊播放** | FFmpeg + `discord.py[voice]` | 語音頻道播放與 Opus 處理 |
+| **JavaScript runtime** | Deno | yt-dlp YouTube challenge 解譯 |
 | **環境變數** | `python-dotenv` | `.env` 檔讀取 |
 | **系統監控** | `psutil` | 顯示 CPU / 記憶體等資源佔用 |
 | **資料庫** | `sqlite3` | 輕量級本地資料持久化 |

@@ -1,3 +1,7 @@
+# Deno 的官方 binary image 只提供執行檔，方便沿用 Python 的 Bookworm runtime。
+# 版本固定，避免 yt-dlp 的 JavaScript runtime 隨 latest tag 漂移。
+FROM ghcr.io/denoland/deno:bin-2.9.7 AS deno
+
 # ========== 階段 1：用 uv 安裝依賴 ==========
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
 
@@ -11,7 +15,15 @@ RUN uv sync --frozen --no-dev
 
 
 # ========== 階段 2：正式執行環境 ==========
-FROM python:3.12-slim
+FROM python:3.12-slim-bookworm
+
+# discord.py 透過 FFmpeg 播放語音；Debian 的 ffmpeg 套件同時提供
+# ffmpeg 與 ffprobe。yt-dlp 的 JavaScript challenge 解譯使用 Deno。
+RUN apt-get update && \
+    apt-get install --no-install-recommends --yes ffmpeg ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=deno /deno /usr/local/bin/deno
 
 # 建立非 root 使用者
 RUN groupadd -r botuser && useradd -r -g botuser -m botuser
