@@ -1,0 +1,10 @@
+# Optional read-only cookie mount. Keep the actual export out of the image/Git.
+# Set MUSIC.cookies_file to /run/secrets/youtube_cookies in setting.json.
+services:
+  discord-bot:
+    secrets:
+      - youtube_cookies
+
+secrets:
+  youtube_cookies:
+    file: ./secrets/youtube.cookies.txt

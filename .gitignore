@@ -1,5 +1,8 @@
 # --- 敏感/執行時檔案 ---
 .env
+secrets/
+cookies.txt
+*.cookies.txt
 setting.json
 settings.json
 data/

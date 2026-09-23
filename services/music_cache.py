@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import http.cookiejar
 import json
 import math
 import os
@@ -17,7 +18,9 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import time
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -195,6 +198,10 @@ class MusicConfig:
     download_timeout_seconds: int = 300
     ffmpeg_executable: str = "ffmpeg"
     js_runtime: str = "deno"
+    cookies_file: Path | None = None
+    allow_ytdlp_plugins: bool = False
+    youtube_player_client: str | None = None
+    pot_provider_url: str | None = None
 
     def __post_init__(self) -> None:
         self.cache_dir = Path(self.cache_dir)
@@ -229,6 +236,34 @@ class MusicConfig:
             raise MusicError("MUSIC.js_runtime 不可為空。")
         if not isinstance(self.cache_dir, Path):
             raise MusicError("MUSIC.cache_dir 必須是路徑。")
+        if self.cookies_file is not None:
+            if not isinstance(self.cookies_file, (str, Path)) or not str(self.cookies_file).strip():
+                raise MusicError("MUSIC.cookies_file 必須是路徑字串或 null。")
+            self.cookies_file = Path(self.cookies_file).expanduser()
+        if not isinstance(self.allow_ytdlp_plugins, bool):
+            raise MusicError("MUSIC.allow_ytdlp_plugins 必須是布林值。")
+        if self.youtube_player_client is not None and (
+            not isinstance(self.youtube_player_client, str)
+            or not re.fullmatch(r"[a-z0-9_]+(?:,[a-z0-9_]+)*", self.youtube_player_client)
+        ):
+            raise MusicError("MUSIC.youtube_player_client 必須是 client 名稱或 null。")
+        if self.pot_provider_url is not None:
+            try:
+                parsed = urlsplit(self.pot_provider_url)
+                valid_url = (
+                    isinstance(self.pot_provider_url, str)
+                    and parsed.scheme in {"http", "https"} and parsed.hostname
+                    and not parsed.username and not parsed.password
+                    and not parsed.query and not parsed.fragment
+                    and not re.search(r"[\s;,]", self.pot_provider_url)
+                )
+                _ = parsed.port
+            except (TypeError, ValueError, AttributeError):
+                valid_url = False
+            if not valid_url:
+                raise MusicError("MUSIC.pot_provider_url 必須是有效的 HTTP(S) 服務網址。")
+            if not self.allow_ytdlp_plugins:
+                raise MusicError("設定 PO Token 服務時，請啟用 MUSIC.allow_ytdlp_plugins 並安裝 provider 外掛。")
 
     @classmethod
     def from_settings(cls, settings: dict, root: Path) -> MusicConfig:
@@ -248,6 +283,14 @@ class MusicConfig:
             cache_dir = cache_path if cache_path.is_absolute() else root / cache_path
         else:
             raise MusicError("MUSIC.cache_dir 必須是路徑字串。")
+
+        raw_cookies = section.get("cookies_file")
+        cookies_file = None
+        if raw_cookies not in (None, ""):
+            if not isinstance(raw_cookies, str):
+                raise MusicError("MUSIC.cookies_file 必須是路徑字串或 null。")
+            cookie_path = Path(raw_cookies).expanduser()
+            cookies_file = cookie_path if cookie_path.is_absolute() else root / cookie_path
 
         max_cache_mb = _setting_number(section, "max_cache_mb", 1024, integer=True, minimum=1)
         max_file_mb = _setting_number(section, "max_file_mb", 100, integer=True, minimum=1)
@@ -282,6 +325,10 @@ class MusicConfig:
             ),
             ffmpeg_executable=section.get("ffmpeg_executable", "ffmpeg"),
             js_runtime=section.get("js_runtime", "deno"),
+            cookies_file=cookies_file,
+            allow_ytdlp_plugins=section.get("allow_ytdlp_plugins", False),
+            youtube_player_client=section.get("youtube_player_client"),
+            pot_provider_url=section.get("pot_provider_url"),
         )
 
 
@@ -452,13 +499,54 @@ class MusicCache:
             "-m",
             "yt_dlp",
             "--ignore-config",
-            "--no-plugin-dirs",
             "--no-warnings",
             "--no-progress",
         ]
         if self.config.js_runtime:
             args.extend(["--js-runtimes", self.config.js_runtime])
+        if not self.config.allow_ytdlp_plugins:
+            args.append("--no-plugin-dirs")
+        if self.config.youtube_player_client:
+            args.extend(["--extractor-args", f"youtube:player_client={self.config.youtube_player_client}"])
+        if self.config.pot_provider_url:
+            args.extend(["--extractor-args", f"youtubepot-bgutilhttp:base_url={self.config.pot_provider_url}"])
         return args
+
+    @contextlib.contextmanager
+    def _cookie_args(self, args: list[str]):
+        """Give each yt-dlp process a private writable cookie jar.
+
+        yt-dlp saves its cookie jar on exit.  A disposable copy supports a
+        read-only Docker secret and prevents concurrent requests overwriting
+        the user's export or each other's cookies.
+        """
+        if self.config.cookies_file is None:
+            yield args
+            return
+        with tempfile.TemporaryDirectory(prefix="ddpybot-cookies-") as directory:
+            cookie_copy = Path(directory) / "cookies.txt"
+            try:
+                with self.config.cookies_file.open("rb") as source:
+                    raw = source.read(2 * 1024 * 1024 + 1)
+            except OSError:
+                raise MusicError("無法讀取 MUSIC.cookies_file，請確認檔案已掛載且機器人有讀取權限。") from None
+            if len(raw) > 2 * 1024 * 1024:
+                raise MusicError("cookies 檔過大，請只匯出 YouTube cookies（上限 2 MiB）。")
+            try:
+                content = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
+                cookie_copy.write_text(content, encoding="utf-8")
+                cookie_copy.chmod(0o600)
+                jar = http.cookiejar.MozillaCookieJar(str(cookie_copy))
+                # Invalid Netscape records can include their contents in a
+                # warning.  Never surface cookie records in logs or Discord.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                if not jar:
+                    raise ValueError("empty cookie jar")
+            except (OSError, UnicodeError, ValueError, http.cookiejar.LoadError):
+                raise MusicError("cookies 檔格式無效或沒有 cookies；請提供 Netscape 格式的 YouTube cookies.txt。") from None
+            yield [*args[:3], "--cookies", str(cookie_copy), *args[3:]]
 
     async def _spawn(self, args: list[str]):
         kwargs = {
@@ -549,6 +637,10 @@ class MusicCache:
                 await asyncio.wait_for(process.wait(), 5)
 
     async def _run_metadata(self, args: list[str]) -> dict:
+        with self._cookie_args(args) as authenticated_args:
+            return await self._run_metadata_process(authenticated_args)
+
+    async def _run_metadata_process(self, args: list[str]) -> dict:
         try:
             process = await self._spawn(args)
         except FileNotFoundError as exc:
@@ -749,6 +841,10 @@ class MusicCache:
             raise MusicError("音樂快取空間不足，請先清理快取。")
 
     async def _run_download(self, args: list[str], track_id: str) -> None:
+        with self._cookie_args(args) as authenticated_args:
+            await self._run_download_process(authenticated_args, track_id)
+
+    async def _run_download_process(self, args: list[str], track_id: str) -> None:
         try:
             process = await self._spawn(args)
         except FileNotFoundError as exc:

@@ -193,10 +193,50 @@ ddpybot/
 | `download_timeout_seconds` | yt-dlp 單次下載逾時秒數 | `300` |
 | `ffmpeg_executable` | FFmpeg 執行檔名稱或完整路徑 | `ffmpeg` |
 | `js_runtime` | yt-dlp JavaScript runtime | `deno` |
+| `cookies_file` | Netscape 格式 cookies 檔路徑，相對路徑以專案根目錄為準；`null` 不使用 cookies | `null` |
+| `allow_ytdlp_plugins` | 載入已安裝的 yt-dlp 外掛，PO Token provider 需要開啟 | `false` |
+| `youtube_player_client` | 指定 YouTube client，例如 `mweb`；`null` 使用 yt-dlp 預設 | `null` |
+| `pot_provider_url` | bgutil HTTP provider 位址；須另外安裝外掛與啟動服務 | `null` |
 
 快取檔案會跨重啟保留，伺服器的待播清單只存在記憶體中，重啟後會清空。`auto_cleanup=false` 時檔案會保留到擁有者執行 `/musiccache clear`，空間不足就拒絕新下載；手動清理會跳過目前播放、下載中或預載保留的檔案。請使用專用的 `cache_dir`，勿混放其他音檔。
 
 下載前會預留 `max_file_mb` 的空間，因此剩餘容量不足此值時，即使新歌曲較小也可能被拒絕。下載中每 0.25 秒檢查音檔與總容量，超限便終止下載並清除未完成檔案；檢查間隔內可能短暫超出上限。`max_file_mb` 不可大於 `max_cache_mb`。
+
+### YouTube 403、cookies 與 PO Token
+
+cookies 提供登入身分，不保證解除所有 403。若錯誤要求登入，可嘗試 cookies；若已取得歌曲資訊但在下載媒體時出現 403，PO Token 是可能原因之一，仍需查看錯誤上下文。先確認部署中的 yt-dlp 與 JavaScript runtime 正常；本專案使用 lockfile，更新主機套件不會自動更新既有 Docker image。
+
+**設定 cookies：** 依 [yt-dlp 的 YouTube 匯出說明](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies) 匯出 Netscape 格式的 YouTube cookies。官方的無痕視窗流程是登入後，在同一分頁開啟 `https://www.youtube.com/robots.txt`，匯出該工作階段的 YouTube cookies，再關閉無痕視窗；勿再開啟該工作階段。格式要求見 [官方 FAQ](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp)。
+
+將檔案存為 `secrets/youtube.cookies.txt`，並在現有 `setting.json` 的 `MUSIC` 物件加入：
+
+```json
+"cookies_file": "secrets/youtube.cookies.txt"
+```
+
+Docker 部署改用容器內路徑 `"cookies_file": "/run/secrets/youtube_cookies"`，搭配本專案的可選 Compose 設定：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.cookies.yml up -d --build
+```
+
+請先建立實際 cookies 檔，並確認非 root 的 bot 使用者有讀取權限。此檔以唯讀方式掛載，程式會為每次資訊查詢／下載建立獨立的可寫暫存副本，結束或取消後刪除；原始匯出檔不會被 yt-dlp 改寫。替換 cookies 後下一次請求便會讀取新內容，修改設定路徑則需重啟。
+
+`secrets/`、`cookies.txt`、`*.cookies.txt` 已排除於 Git／Docker build。cookies 是登入憑證，請勿貼到 Discord、提交至 Git 或放進 image；機器人的點播會共用此帳號能存取的內容。官方也提醒用帳號下載可能受到帳號限制，請只在需要時啟用。
+
+**是否需要 PO Token server：** 不一定。[官方 PO Token 指引](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide) 建議需要 token 時使用 provider 外掛搭配 `mweb`，避免手動維護逐影片的 token。[bgutil provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider#setup) 同時提供常駐 HTTP server 與按需執行的 script；常駐 bot 可考慮 HTTP 模式，低流量也可使用 script。
+
+這次改動提供設定介面，沒有自動安裝 provider 或啟動額外服務。若確認採用 bgutil HTTP 模式，先依其文件部署服務，並在 bot 的 Python 環境安裝 provider（uv 專案可用 `uv add bgutil-ytdlp-pot-provider`，Docker 需重建 image），再設定：
+
+```json
+"allow_ytdlp_plugins": true,
+"youtube_player_client": "mweb",
+"pot_provider_url": "http://bgutil-provider:4416"
+```
+
+上例假設 provider 與 bot 位於同一個 Docker 網路，服務名稱為 `bgutil-provider`；本機執行可用 `http://127.0.0.1:4416`。不要在 bot 容器中用 `127.0.0.1` 指向另一個容器。只需內部網路連線，無須公開 provider port。script 模式可使用 provider 文件中的預設安裝路徑，並讓 `pot_provider_url` 保持 `null`。
+
+預設保留 `--ignore-config` 與停用外掛；只有 `allow_ytdlp_plugins=true` 才會移除 `--no-plugin-dirs`。只安裝 provider、只啟動 server，或只修改系統的 yt-dlp 設定檔，都不足以讓目前 bot 使用 PO Token。這些設定可與 cookies 分別或一起使用，仍不能保證解決 IP 限流或所有 YouTube 驗證問題。
 
 ---
 

@@ -20,6 +20,10 @@
         "cleanup_interval_seconds": 600,
         "download_timeout_seconds": 300,
         "ffmpeg_executable": "ffmpeg",
-        "js_runtime": "deno"
+        "js_runtime": "deno",
+        "cookies_file": null,
+        "allow_ytdlp_plugins": false,
+        "youtube_player_client": null,
+        "pot_provider_url": null
     }
 }

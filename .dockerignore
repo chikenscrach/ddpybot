@@ -5,10 +5,14 @@
 # === Docker 自身 ===
 Dockerfile
 docker-compose.yml
+docker-compose.cookies.yml
 .dockerignore
 
 # === 敏感檔案（絕對不打包進 image）===
 .env
+secrets/
+**/cookies.txt
+**/*.cookies.txt
 .env.example
 setting.json
 setting.json.example
