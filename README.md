@@ -313,9 +313,18 @@ docker compose -f docker-compose.yml -f docker-compose.cookies.yml up -d --build
 ## 🧪 開發工具
 
 ```bash
-uv run ruff check .    # Lint（規則見 pyproject.toml [tool.ruff]）
-uv run pytest          # 單元測試（tests/，涵蓋時間解析、地震分組、PTT 解析等純函式）
+uv sync --locked --dev       # 依 uv.lock 安裝依賴與開發工具；鎖定檔過期時會失敗
+uv run --locked ruff check . # Lint（規則見 pyproject.toml [tool.ruff]）
+SETTING_PATH=setting.json.example uv run --locked pytest # 使用範例設定執行單元測試
 ```
+
+### GitHub Actions CI
+
+[CI 工作流程](.github/workflows/ci.yml) 會在推送 `main`、建立或更新 Pull Request 時執行，也可從 GitHub Actions 頁面手動觸發。執行環境為 Ubuntu，Python 版本依 `.python-version`（目前為 3.12），透過固定版本的 uv 安裝 `uv.lock` 中的依賴，再依序執行 Ruff 與 pytest。相同事件與分支的新執行會取消尚未完成的舊執行。
+
+CI 透過 `SETTING_PATH` 讀取已納入版本控制的 `setting.json.example`，不需要設定 Discord Token、API Key、`.env` 或建立 `setting.json`，也不會啟動機器人。這些單元測試不代表已驗證實際 Discord 連線或 YouTube 下載。
+
+將此工作流程推送至 GitHub 並成功執行一次後，可在 `main` 的 Ruleset 啟用 **Require status checks to pass**，加入檢查名稱 **`test`**（工作流程名稱為 `CI`），並啟用 **Require branches to be up to date before merging**。Ruff 或 pytest 任一失敗，`test` 就不會通過。必要檢查須另外在 GitHub 設定；新增此檔案不會自動修改 Ruleset。
 
 ---
 
