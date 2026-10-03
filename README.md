@@ -44,19 +44,17 @@ uv run python main.py
 
 ## 文件
 
-詳細說明已依用途拆分，避免 README 同時充當操作手冊、部署指南與疑難排解文件。
+完整文件集中於 [GitHub Wiki](https://github.com/chikenscrach/ddpybot/wiki)。
 
 | 文件 | 內容 |
 | --- | --- |
-| [文件首頁](docs/wiki/Home.md) | 文件導覽與功能概覽 |
-| [指令參考](docs/wiki/Commands.md) | Slash / Hybrid / Prefix 指令 |
-| [設定指南](docs/wiki/Configuration.md) | `.env`、`setting.json`、音樂參數 |
-| [音樂與 YouTube](docs/wiki/Music-and-YouTube.md) | 播放行為、快取、cookies、PO Token |
-| [Owner Dashboard](docs/wiki/Dashboard.md) | OAuth2、頁面功能、Docker 啟用與安全模型 |
-| [部署指南](docs/wiki/Deployment.md) | Docker、本機部署、Discord 權限 |
-| [架構與開發](docs/wiki/Architecture-and-Development.md) | 專案結構、技術棧、測試、CI、日誌 |
-
-> GitHub Wiki 已啟用；`docs/wiki/` 作為可版本控制的 Wiki 文件來源，內容可直接同步到 GitHub Wiki。
+| [文件首頁](https://github.com/chikenscrach/ddpybot/wiki) | 文件導覽與功能概覽 |
+| [指令參考](https://github.com/chikenscrach/ddpybot/wiki/Commands) | Slash / Hybrid / Prefix 指令 |
+| [設定指南](https://github.com/chikenscrach/ddpybot/wiki/Configuration) | `.env`、`setting.json`、音樂參數 |
+| [音樂與 YouTube](https://github.com/chikenscrach/ddpybot/wiki/Music-and-YouTube) | 播放行為、快取、cookies、PO Token |
+| [Owner Dashboard](https://github.com/chikenscrach/ddpybot/wiki/Dashboard) | OAuth2、頁面功能、Docker 啟用與安全模型 |
+| [部署指南](https://github.com/chikenscrach/ddpybot/wiki/Deployment) | Docker、本機部署、Discord 權限 |
+| [架構與開發](https://github.com/chikenscrach/ddpybot/wiki/Architecture-and-Development) | 專案結構、技術棧、測試、CI、日誌 |
 
 ## 開發
 
@@ -66,4 +64,4 @@ uv run --locked ruff check .
 SETTING_PATH=setting.json.example uv run --locked pytest
 ```
 
-CI 會在推送 `main` 與 Pull Request 時執行 Ruff 與 pytest。更多資訊請見 [架構與開發](docs/wiki/Architecture-and-Development.md)。
+CI 會在推送 `main` 與 Pull Request 時執行 Ruff 與 pytest。更多資訊請見 [架構與開發](https://github.com/chikenscrach/ddpybot/wiki/Architecture-and-Development)。
