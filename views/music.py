@@ -35,6 +35,16 @@ STATUS_COLORS = {
     "disconnected": discord.Color.dark_grey(),
 }
 
+LOOP_MODE_LABELS = {
+    "off": "關閉循環",
+    "queue": "播放清單循環",
+    "track": "單曲循環",
+}
+
+
+def _loop_mode_label(state: Any) -> str:
+    return LOOP_MODE_LABELS.get(getattr(state, "loop_mode", "off"), LOOP_MODE_LABELS["off"])
+
 
 def _truncate(value: Any, limit: int, fallback: str = "") -> str:
     text = str(value or fallback)
@@ -155,6 +165,8 @@ def build_now_playing_embed(
     if channel_id is not None:
         embed.add_field(name="語音頻道", value=f"<#{channel_id}>", inline=True)
 
+    embed.add_field(name="循環模式", value=_loop_mode_label(state), inline=True)
+
     if thumbnail:
         embed.set_thumbnail(url=_truncate(thumbnail, 2048))
 
@@ -188,7 +200,7 @@ def build_queue_embed(state: Any, *, limit: int = 20) -> discord.Embed:
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text=f"共 {len(queue)} 首待播歌曲")
+    embed.set_footer(text=f"共 {len(queue)} 首待播歌曲 • {_loop_mode_label(state)}")
     return embed
 
 
@@ -220,7 +232,9 @@ def build_queue_embeds(state: Any, *, page_size: int = 20) -> list[discord.Embed
             description="\n".join(lines),
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text=f"第 {page_index + 1} / {page_count} 頁 • 共 {len(queue)} 首待播歌曲")
+        embed.set_footer(
+            text=f"第 {page_index + 1} / {page_count} 頁 • 共 {len(queue)} 首待播歌曲 • {_loop_mode_label(state)}"
+        )
         pages.append(embed)
     return pages
 
@@ -381,6 +395,11 @@ class MusicControlView(discord.ui.View):
                 child.disabled = not active
             elif custom_id.endswith("skip"):
                 child.disabled = not active
+            elif custom_id.endswith("loop_queue") or custom_id.endswith("loop_track"):
+                mode = "queue" if custom_id.endswith("loop_queue") else "track"
+                enabled = getattr(state, "loop_mode", "off") == mode
+                child.style = discord.ButtonStyle.success if enabled else discord.ButtonStyle.secondary
+                child.disabled = not active
             elif custom_id.endswith("queue"):
                 child.disabled = self.disposed or state is None
 
@@ -485,6 +504,37 @@ class MusicControlView(discord.ui.View):
         except Exception as exc:
             log.exception("music skip button failed")
             await _send_ephemeral(interaction, _music_error_text(exc))
+
+    async def _toggle_loop_mode(self, interaction: discord.Interaction, mode: str):
+        if not await self._validate(interaction):
+            return
+        await _defer(interaction)
+        try:
+            await self._service().set_loop_mode(self.guild_id, mode, toggle=True)
+            await self._finish_action(interaction)
+        except Exception as exc:
+            log.exception("music loop button failed")
+            await _send_ephemeral(interaction, _music_error_text(exc))
+
+    @discord.ui.button(
+        label="播放清單循環",
+        emoji="🔁",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ddpybot_music_loop_queue",
+        row=1,
+    )
+    async def loop_queue_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await self._toggle_loop_mode(interaction, "queue")
+
+    @discord.ui.button(
+        label="單曲循環",
+        emoji="🔂",
+        style=discord.ButtonStyle.secondary,
+        custom_id="ddpybot_music_loop_track",
+        row=1,
+    )
+    async def loop_track_button(self, interaction: discord.Interaction, _button: discord.ui.Button):
+        await self._toggle_loop_mode(interaction, "track")
 
     @discord.ui.button(
         label="待播清單",

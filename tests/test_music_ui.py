@@ -3,7 +3,13 @@ from collections import deque
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import discord
+import pytest
+
+from services.music_cache import MusicError
+from services.music_service import LoopMode
 from views.music import (
+    LOOP_MODE_LABELS,
     MusicControlView,
     PlaylistConfirmationView,
     build_now_playing_embed,
@@ -48,7 +54,7 @@ def _interaction(user, *, guild_id=99, message_id=None):
     return interaction
 
 
-def _state(*, session_id=1, channel_id=10, status="playing"):
+def _state(*, session_id=1, channel_id=10, status="playing", loop_mode=LoopMode.OFF):
     track = SimpleNamespace(
         title="A very long song title " + "x" * 300,
         url="https://www.youtube.com/watch?v=abc",
@@ -60,6 +66,7 @@ def _state(*, session_id=1, channel_id=10, status="playing"):
         guild_id=99,
         session_id=session_id,
         status=status,
+        loop_mode=loop_mode,
         current=track,
         queue=deque(SimpleNamespace(title=f"queue-{i}") for i in range(45)),
         voice=SimpleNamespace(channel=SimpleNamespace(id=channel_id)),
@@ -84,6 +91,125 @@ def test_queue_pages_expose_all_tracks():
     text = "\n".join(page.description for page in pages)
     assert "queue-0" in text
     assert "queue-44" in text
+
+
+@pytest.mark.parametrize('mode', list(LoopMode))
+def test_panels_and_queue_pages_display_loop_mode(mode):
+    state = _state(loop_mode=mode)
+    embed = build_now_playing_embed(state)
+    assert any(
+        field.name == '循環模式' and field.value == LOOP_MODE_LABELS[mode]
+        for field in embed.fields
+    )
+    assert all(LOOP_MODE_LABELS[mode] in page.footer.text for page in build_queue_embeds(state))
+
+
+@pytest.mark.parametrize('mode', [LoopMode.QUEUE, LoopMode.TRACK])
+def test_loop_buttons_set_mode_and_highlight_active_mode(mode):
+    state = _state(loop_mode=mode)
+    service = SimpleNamespace(
+        get_state=lambda _guild_id: state,
+        set_loop_mode=AsyncMock(return_value=mode),
+    )
+    cog = SimpleNamespace(service=service, refresh_panel=AsyncMock())
+    view = MusicControlView(cog, guild_id=99, session_id=1)
+    view._set_control_state(state)
+    buttons = {child.custom_id: child for child in view.children}
+    for candidate in [LoopMode.QUEUE, LoopMode.TRACK]:
+        button = buttons[f'ddpybot_music_loop_{candidate.value}']
+        expected = discord.ButtonStyle.success if candidate == mode else discord.ButtonStyle.secondary
+        assert button.style == expected
+        assert not button.disabled
+
+    interaction = _interaction(_member())
+    _click(view, f'ddpybot_music_loop_{mode.value}', interaction)
+    service.set_loop_mode.assert_awaited_once_with(99, mode.value, toggle=True)
+    cog.refresh_panel.assert_awaited_once_with(99)
+    interaction.response.defer.assert_awaited_once()
+
+    state.status = 'stopped'
+    state.loop_mode = LoopMode.OFF
+    view._set_control_state(state)
+    assert all(
+        buttons[f'ddpybot_music_loop_{candidate.value}'].disabled
+        for candidate in [LoopMode.QUEUE, LoopMode.TRACK]
+    )
+
+
+@pytest.mark.parametrize('mode', [LoopMode.QUEUE, LoopMode.TRACK])
+@pytest.mark.parametrize('reason', ['wrong_channel', 'stale_session', 'disposed'])
+def test_loop_buttons_reject_unauthorized_or_stale_interactions(mode, reason):
+    state = _state(session_id=2 if reason == 'stale_session' else 1)
+    service = SimpleNamespace(get_state=lambda _guild_id: state, set_loop_mode=AsyncMock())
+    cog = SimpleNamespace(service=service)
+    view = MusicControlView(cog, guild_id=99, session_id=1)
+    view.disposed = reason == 'disposed'
+    interaction = _interaction(_member(channel_id=11 if reason == 'wrong_channel' else 10))
+    _click(view, f'ddpybot_music_loop_{mode.value}', interaction)
+    service.set_loop_mode.assert_not_awaited()
+    assert interaction.response.send_message.call_args.kwargs['ephemeral'] is True
+
+
+def test_loop_button_reports_service_error_ephemerally():
+    state = _state()
+    service = SimpleNamespace(
+        get_state=lambda _guild_id: state,
+        set_loop_mode=AsyncMock(side_effect=MusicError('目前沒有可循環播放的歌曲，請先點歌。')),
+    )
+    view = MusicControlView(SimpleNamespace(service=service), guild_id=99, session_id=1)
+    interaction = _interaction(_member())
+    _click(view, 'ddpybot_music_loop_queue', interaction)
+    assert '請先點歌' in interaction.followup.send.call_args.args[0]
+    assert interaction.followup.send.call_args.kwargs['ephemeral'] is True
+
+
+@pytest.mark.parametrize('mode', list(LoopMode))
+def test_loop_command_sets_mode_and_confirms_selection(mode):
+    from cmds.music import Music
+
+    state = _state()
+    cog = Music.__new__(Music)
+    cog.service = SimpleNamespace(
+        get_state=lambda _guild_id: state,
+        set_loop_mode=AsyncMock(return_value=mode),
+    )
+    interaction = _interaction(_member())
+    asyncio.run(Music.loop.callback(cog, interaction, mode.value))
+    cog.service.set_loop_mode.assert_awaited_once_with(99, mode.value)
+    assert LOOP_MODE_LABELS[mode] in interaction.followup.send.call_args.args[0]
+    assert interaction.followup.send.call_args.kwargs['ephemeral'] is True
+    assert {choice.value for choice in Music.loop.parameters[0].choices} == {'off', 'queue', 'track'}
+
+
+@pytest.mark.parametrize('reason', ['wrong_channel', 'no_voice', 'no_guild'])
+def test_loop_command_requires_same_voice_channel(reason):
+    from cmds.music import Music
+
+    cog = Music.__new__(Music)
+    cog.service = SimpleNamespace(get_state=lambda _guild_id: _state(), set_loop_mode=AsyncMock())
+    user = _member(channel_id=11 if reason == 'wrong_channel' else 10)
+    interaction = _interaction(user)
+    if reason == 'no_voice':
+        user.voice = None
+    elif reason == 'no_guild':
+        interaction.guild = None
+    asyncio.run(Music.loop.callback(cog, interaction, 'queue'))
+    cog.service.set_loop_mode.assert_not_awaited()
+    assert interaction.followup.send.call_args.kwargs['ephemeral'] is True
+
+
+def test_loop_command_reports_missing_songs_ephemerally():
+    from cmds.music import Music
+
+    cog = Music.__new__(Music)
+    cog.service = SimpleNamespace(
+        get_state=lambda _guild_id: _state(),
+        set_loop_mode=AsyncMock(side_effect=MusicError('目前沒有可循環播放的歌曲，請先點歌。')),
+    )
+    interaction = _interaction(_member())
+    asyncio.run(Music.loop.callback(cog, interaction, 'track'))
+    assert '請先點歌' in interaction.followup.send.call_args.args[0]
+    assert interaction.followup.send.call_args.kwargs['ephemeral'] is True
 
 
 def test_music_control_rejects_stale_session_and_wrong_channel():

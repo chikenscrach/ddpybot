@@ -122,23 +122,36 @@ def test_play_pause_skip_and_release(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-def test_playnext_preserves_order_and_keeps_current(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', list(music.LoopMode))
+def test_playnext_preserves_order_and_keeps_current(tmp_path, monkeypatch, mode):
     async def scenario():
         service, member, voice = make_service(tmp_path, monkeypatch)
         first, queued, a, b = [track(n) for n in range(4)]
         service.cache.resolve.return_value = [first, queued]
         await service.enqueue(member, SimpleNamespace(id=20), 'url')
         await spin_until(lambda: voice.is_playing())
+        await service.set_loop_mode(1, mode)
         service.cache.resolve.return_value = [a, b]
         await service.enqueue(member, SimpleNamespace(id=20), 'url', next_up=True)
         assert service.get_state(1).current is first
         assert list(service.get_state(1).queue) == [a, b, queued]
+        voice.finish()
+        await spin_until(lambda: len(voice.played) == 2)
+        if mode == music.LoopMode.TRACK:
+            assert service.get_state(1).current is first
+            assert list(service.get_state(1).queue) == [a, b, queued]
+            await service.skip(1)
+            await spin_until(lambda: len(voice.played) == 3)
+        assert service.get_state(1).current is a
+        expected = [b, queued, first] if mode == music.LoopMode.QUEUE else [b, queued]
+        assert list(service.get_state(1).queue) == expected
         await service.close()
         assert all(source.source.cleaned for source in voice.played)
     asyncio.run(scenario())
 
 
-def test_stop_during_download_cancels_without_playing(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', list(music.LoopMode))
+def test_stop_during_download_cancels_without_playing(tmp_path, monkeypatch, mode):
     async def scenario():
         service, member, voice = make_service(tmp_path, monkeypatch)
         downloading = asyncio.Event()
@@ -155,11 +168,13 @@ def test_stop_during_download_cancels_without_playing(tmp_path, monkeypatch):
         service.cache.resolve.return_value = [track(1), track(2)]
         await service.enqueue(member, SimpleNamespace(id=20), 'url')
         await downloading.wait()
+        await service.set_loop_mode(1, mode)
         await service.stop(1)
         assert cancelled.is_set()
         assert not voice.played
         assert not service.get_state(1).queue
         assert service.get_state(1).status == 'stopped'
+        assert service.get_state(1).loop_mode == music.LoopMode.OFF
         assert voice.connected
         await service.close()
     asyncio.run(scenario())
@@ -226,15 +241,18 @@ def test_empty_countdown_cancelled_on_return_and_bot_members_ignored(tmp_path, m
     asyncio.run(scenario())
 
 
-def test_track_failure_advances_queue(tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', list(music.LoopMode))
+def test_track_failure_advances_queue(tmp_path, monkeypatch, mode):
     async def scenario():
         service, member, voice = make_service(tmp_path, monkeypatch)
         first, second = track(1), track(2)
         service.cache.acquire.side_effect = [MusicError('bad file'), Path('second.webm')]
         service.cache.resolve.return_value = [first, second]
         await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await service.set_loop_mode(1, mode)
         await spin_until(lambda: voice.is_playing())
         assert service.get_state(1).current is second
+        assert not service.get_state(1).queue
         assert any(call.args[1] == 'error' for call in service.on_update.await_args_list)
         await service.close()
     asyncio.run(scenario())
@@ -252,7 +270,12 @@ def test_guilds_are_independent_and_queue_limit_is_atomic(tmp_path, monkeypatch)
         assert len(state.queue) == 1
         other = music.GuildPlayer(2, FakeVoice(voice.channel), 30, 2, queue=deque([track(9)]))
         service.players[2] = other
+        await service.set_loop_mode(1, music.LoopMode.QUEUE)
+        await service.set_loop_mode(2, music.LoopMode.TRACK)
+        assert state.loop_mode == music.LoopMode.QUEUE
         await service.stop(1)
+        assert state.loop_mode == music.LoopMode.OFF
+        assert other.loop_mode == music.LoopMode.TRACK
         assert len(other.queue) == 1
         assert other.voice.connected
         await service.close()
@@ -337,6 +360,198 @@ def test_stop_cancels_inflight_prefetch(tmp_path, monkeypatch):
         await service.close()
     asyncio.run(scenario())
 
+
+@pytest.mark.parametrize('numbers', [[1], [1, 2, 3]])
+def test_queue_loop_repeats_in_order_without_growing_queue(tmp_path, monkeypatch, numbers):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        tracks = [track(number) for number in numbers]
+        service.cache.resolve.return_value = tracks
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        assert state.loop_mode == music.LoopMode.OFF
+        await service.set_loop_mode(1, music.LoopMode.QUEUE)
+
+        for expected in tracks[1:] + tracks * 2:
+            count = len(voice.played)
+            voice.finish()
+            await spin_until(lambda count=count: len(voice.played) > count)
+            assert state.current is expected
+            assert len(state.queue) == len(tracks) - 1
+            assert voice.played[count - 1].source.cleaned
+
+        await service.close()
+        assert all(source.source.cleaned for source in voice.played)
+        assert service.cache.release.await_count == service.cache.acquire.await_count
+    asyncio.run(scenario())
+
+
+def test_single_loop_keeps_queue_and_disabling_it_resumes_queue(tmp_path, monkeypatch):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        first, second, third = track(1), track(2), track(3)
+        service.cache.resolve.return_value = [first, second, third]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        await service.set_loop_mode(1, music.LoopMode.TRACK)
+
+        for _ in range(3):
+            count = len(voice.played)
+            voice.finish()
+            await spin_until(lambda count=count: len(voice.played) > count)
+            assert state.current is first
+            assert list(state.queue) == [second, third]
+            assert state.prefetch is None
+
+        source = voice.source
+        await service.set_loop_mode(1, music.LoopMode.OFF)
+        assert voice.source is source
+        for expected in [second, third]:
+            count = len(voice.played)
+            voice.finish()
+            await spin_until(lambda count=count: len(voice.played) > count)
+            assert state.current is expected
+        voice.finish()
+        await spin_until(lambda: state.status == 'idle')
+        assert state.current is None
+        assert not state.queue
+        await service.close()
+        assert service.cache.release.await_count == service.cache.acquire.await_count
+    asyncio.run(scenario())
+
+
+def test_switching_loop_modes_while_paused_does_not_restart_audio(tmp_path, monkeypatch):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        first, second = track(1), track(2)
+        service.cache.resolve.return_value = [first, second]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        source = voice.source
+        await service.toggle_pause(1)
+        assert await service.set_loop_mode(1, music.LoopMode.QUEUE, toggle=True) == music.LoopMode.QUEUE
+        assert await service.set_loop_mode(1, music.LoopMode.TRACK, toggle=True) == music.LoopMode.TRACK
+        assert state.prefetch is None
+        assert await service.set_loop_mode(1, music.LoopMode.TRACK, toggle=True) == music.LoopMode.OFF
+        assert state.prefetch is not None
+        assert voice.source is source
+        assert len(voice.played) == 1
+        assert voice.is_paused()
+        assert state.status == 'paused'
+        assert list(state.queue) == [second]
+        await service.close()
+        assert service.cache.release.await_count == service.cache.acquire.await_count
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', [music.LoopMode.QUEUE, music.LoopMode.TRACK])
+@pytest.mark.parametrize('numbers', [[1], [1, 2]])
+def test_skip_removes_looped_track_and_advances(tmp_path, monkeypatch, mode, numbers):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        tracks = [track(number) for number in numbers]
+        service.cache.resolve.return_value = tracks
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        await service.set_loop_mode(1, mode)
+        await service.skip(1)
+        if len(tracks) == 2:
+            await spin_until(lambda: len(voice.played) == 2)
+            assert state.current is tracks[1]
+            assert not state.queue
+            assert state.loop_mode == mode
+            await service.skip(1)
+        await spin_until(lambda: state.status == 'idle')
+        assert len(voice.played) == len(tracks)
+        assert state.current is None
+        assert not state.queue
+        await service.close()
+        assert service.cache.release.await_count == service.cache.acquire.await_count
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', [music.LoopMode.QUEUE, music.LoopMode.TRACK])
+@pytest.mark.parametrize('action', ['stop', 'leave'])
+def test_stop_and_leave_reset_loop_and_release_audio(tmp_path, monkeypatch, mode, action):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        service.cache.resolve.return_value = [track(1), track(2)]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        await service.set_loop_mode(1, mode)
+        await service.toggle_pause(1)
+        await getattr(service, action)(1)
+        assert state.loop_mode == music.LoopMode.OFF
+        assert state.current is None
+        assert not state.queue
+        assert state.runner is None
+        assert not voice.is_playing()
+        assert all(source.source.cleaned for source in voice.played)
+        assert service.cache.release.await_count == service.cache.acquire.await_count
+        if action == 'stop':
+            assert voice.connected
+            assert state.status == 'stopped'
+            service.cache.resolve.return_value = [track(3)]
+            await service.enqueue(member, SimpleNamespace(id=20), 'url')
+            await spin_until(lambda: voice.is_playing())
+            voice.finish()
+            await spin_until(lambda: state.status == 'idle')
+            assert len(voice.played) == 2
+        else:
+            assert not voice.connected
+            assert service.get_state(1) is None
+        await service.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', [music.LoopMode.QUEUE, music.LoopMode.TRACK])
+def test_audio_failure_is_not_requeued_in_loop_modes(tmp_path, monkeypatch, mode):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        first, second = track(1), track(2)
+        service.cache.resolve.return_value = [first, second]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        await service.set_loop_mode(1, mode)
+        voice.finish(RuntimeError('audio failed'))
+        await spin_until(lambda: len(voice.played) == 2)
+        state = service.get_state(1)
+        assert state.current is second
+        assert not state.queue
+        assert any(call.args[1] == 'error' for call in service.on_update.await_args_list)
+        voice.finish()
+        await spin_until(lambda: len(voice.played) == 3)
+        assert state.current is second
+        assert not state.queue
+        await service.close()
+        assert service.cache.release.await_count == service.cache.acquire.await_count
+    asyncio.run(scenario())
+
+
+def test_loop_mode_rejects_invalid_modes_empty_queue_and_missing_connection(tmp_path, monkeypatch):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        with pytest.raises(MusicError, match='加入語音頻道'):
+            await service.set_loop_mode(1, music.LoopMode.QUEUE)
+        state = music.GuildPlayer(1, voice, 20, 1)
+        service.players[1] = state
+        with pytest.raises(MusicError, match='無效的循環模式'):
+            await service.set_loop_mode(1, 'unknown')
+        for mode in [music.LoopMode.QUEUE, music.LoopMode.TRACK]:
+            with pytest.raises(MusicError, match='請先點歌'):
+                await service.set_loop_mode(1, mode)
+            assert state.loop_mode == music.LoopMode.OFF
+        assert await service.set_loop_mode(1, music.LoopMode.OFF) == music.LoopMode.OFF
+        voice.connected = False
+        with pytest.raises(MusicError, match='加入語音頻道'):
+            await service.set_loop_mode(1, music.LoopMode.OFF)
+        await service.close()
+    asyncio.run(scenario())
 
 def test_bot_forced_disconnect_releases_session(tmp_path, monkeypatch):
     async def scenario():

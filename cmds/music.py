@@ -15,9 +15,11 @@ from core.classes import CogExtension
 from core.config import PROJECT_ROOT, settings
 from services.music_cache import MusicConfig, MusicError, has_playlist, single_video_url
 from services.music_service import (
+    LoopMode,
     MusicService,
 )
 from views.music import (
+    LOOP_MODE_LABELS,
     MusicControlView,
     PlaylistConfirmationView,
     _music_error_text,
@@ -352,6 +354,29 @@ class Music(CogExtension):
     @app_commands.guild_only()
     async def playnext(self, interaction: discord.Interaction, url: str):
         await self._run_enqueue_command(interaction, url, next_up=True)
+
+    @app_commands.command(name="loop", description="設定播放清單循環、單曲循環或關閉循環")
+    @app_commands.describe(mode="要使用的循環播放模式")
+    @app_commands.choices(
+        mode=[
+            app_commands.Choice(name="關閉循環", value=LoopMode.OFF.value),
+            app_commands.Choice(name="播放清單循環", value=LoopMode.QUEUE.value),
+            app_commands.Choice(name="單曲循環", value=LoopMode.TRACK.value),
+        ]
+    )
+    @app_commands.guild_only()
+    async def loop(self, interaction: discord.Interaction, mode: str):
+        await _defer_ephemeral(interaction)
+        allowed, _channel = await self._require_voice(interaction)
+        if not allowed:
+            return
+        try:
+            loop_mode = await self.service.set_loop_mode(_id(interaction.guild), mode)
+            await _send_ephemeral(interaction, f"✅ 已設定為「{LOOP_MODE_LABELS[loop_mode]}」。")
+        except Exception as exc:
+            if not isinstance(exc, MusicError):
+                log.exception("music loop command failed")
+            await _send_ephemeral(interaction, _music_error_text(exc))
 
     @app_commands.command(name="leave", description="讓機器人離開語音頻道並清除播放佇列")
     @app_commands.guild_only()
