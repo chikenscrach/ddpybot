@@ -6,8 +6,10 @@ import asyncio
 import contextlib
 import itertools
 import logging
+import secrets
 import shutil
 import threading
+import time
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -110,6 +112,8 @@ class GuildPlayer:
     prefetch: _PreparedTrack | None = None
     empty_timer: asyncio.Task | None = None
     disconnecting: bool = False
+    progress_started: float | None = None
+    progress_elapsed: float = 0.0
 
 
 class MusicService:
@@ -125,9 +129,44 @@ class MusicService:
         self._cleanup_task: asyncio.Task | None = None
         self._requests: set[asyncio.Task] = set()
         self._closed = False
+        self.generation = secrets.token_hex(12)
 
     def get_state(self, guild_id: int) -> GuildPlayer | None:
         return self.players.get(guild_id)
+
+    @staticmethod
+    def _elapsed(state: GuildPlayer) -> float:
+        elapsed = state.progress_elapsed
+        if state.progress_started is not None:
+            elapsed += max(0, time.monotonic() - state.progress_started)
+        if state.current and state.current.duration:
+            elapsed = min(elapsed, state.current.duration)
+        return round(max(0, elapsed), 2)
+
+    def snapshot(self, guild_id: int) -> dict:
+        """Copy browser-safe state on the bot loop; never expose runtime objects."""
+        def song(track):
+            if track is None:
+                return None
+            return {
+                'title': track.title, 'url': track.url, 'duration': track.duration,
+                'thumbnail': track.thumbnail,
+                'requester_id': str(track.requester_id) if track.requester_id else None,
+            }
+
+        state = self.players.get(guild_id)
+        channel = state.voice.channel if state else None
+        return {
+            'guild_id': str(guild_id), 'generation': self.generation,
+            'session_id': state.session_id if state else None,
+            'status': state.status if state else 'idle',
+            'loop_mode': state.loop_mode.value if state else 'off',
+            'voice_channel_id': str(channel.id) if channel else None,
+            'voice_channel_name': getattr(channel, 'name', '') if channel else None,
+            'current': song(state.current) if state else None,
+            'queue': [song(track) for track in state.queue] if state else [],
+            'elapsed_seconds': self._elapsed(state) if state and state.current else 0,
+        }
 
     def _lock(self, guild_id: int) -> asyncio.Lock:
         return self._locks.setdefault(guild_id, asyncio.Lock())
@@ -265,6 +304,8 @@ class MusicService:
                             state.queue.append(state.current)
                     finally:
                         state.current = None
+                        state.progress_started = None
+                        state.progress_elapsed = 0.0
                 await self._discard_prefetch(state)
                 state.status = 'idle'
                 await self._notify(state, 'idle')
@@ -291,6 +332,8 @@ class MusicService:
         source = None
         started = False
         try:
+            state.progress_elapsed = 0.0
+            state.progress_started = None
             state.status = 'downloading'
             await self._notify(state, 'downloading')
             path = await prepared.task
@@ -311,6 +354,7 @@ class MusicService:
 
             state.voice.play(source, after=after)
             started = True
+            state.progress_started = time.monotonic()
             state.status = 'playing'
             if state.queue and state.loop_mode != LoopMode.TRACK:
                 state.prefetch = _PreparedTrack(self.cache, state.queue[0])
@@ -349,16 +393,22 @@ class MusicService:
     async def toggle_pause(self, guild_id: int) -> bool:
         async with self._lock(guild_id):
             state = self._require_state(guild_id)
-            if state.voice.is_paused():
-                state.voice.resume()
-                state.status = 'playing'
-            elif state.voice.is_playing():
-                state.voice.pause()
-                state.status = 'paused'
-            else:
-                raise MusicError('目前沒有正在播放的歌曲。')
-            await self._notify(state, state.status)
+            await self._pause_locked(state, not state.voice.is_paused())
             return state.status == 'paused'
+
+    async def _pause_locked(self, state: GuildPlayer, paused: bool):
+        if not (state.voice.is_paused() or state.voice.is_playing()):
+            raise MusicError('目前沒有正在播放的歌曲。')
+        if paused and not state.voice.is_paused():
+            state.progress_elapsed = self._elapsed(state)
+            state.progress_started = None
+            state.voice.pause()
+            state.status = 'paused'
+        elif not paused and state.voice.is_paused():
+            state.voice.resume()
+            state.progress_started = time.monotonic()
+            state.status = 'playing'
+        await self._notify(state, state.status)
 
     async def set_loop_mode(
         self, guild_id: int, mode: LoopMode | str, *, toggle: bool = False,
@@ -371,15 +421,18 @@ class MusicService:
             state = self._require_state(guild_id)
             if toggle and state.loop_mode == mode:
                 mode = LoopMode.OFF
-            if mode != LoopMode.OFF and state.current is None and not state.queue:
-                raise MusicError('目前沒有可循環播放的歌曲，請先點歌。')
-            state.loop_mode = mode
-            if mode == LoopMode.TRACK:
-                await self._discard_prefetch(state)
-            elif state.status in ('playing', 'paused') and state.prefetch is None and state.queue:
-                state.prefetch = _PreparedTrack(self.cache, state.queue[0])
-            await self._notify(state, 'loop')
-            return mode
+            return await self._set_loop_locked(state, mode)
+
+    async def _set_loop_locked(self, state: GuildPlayer, mode: LoopMode) -> LoopMode:
+        if mode != LoopMode.OFF and state.current is None and not state.queue:
+            raise MusicError('目前沒有可循環播放的歌曲，請先點歌。')
+        state.loop_mode = mode
+        if mode == LoopMode.TRACK:
+            await self._discard_prefetch(state)
+        elif state.status in ('playing', 'paused') and state.prefetch is None and state.queue:
+            state.prefetch = _PreparedTrack(self.cache, state.queue[0])
+        await self._notify(state, 'loop')
+        return mode
 
     async def _halt(self, state: GuildPlayer):
         runner, state.runner = state.runner, None
@@ -391,24 +444,60 @@ class MusicService:
             await asyncio.gather(runner, return_exceptions=True)
         await self._discard_prefetch(state)
         state.current = None
+        state.progress_started = None
+        state.progress_elapsed = 0.0
 
     async def skip(self, guild_id: int):
         async with self._lock(guild_id):
             state = self._require_state(guild_id)
-            if state.current is None:
-                raise MusicError('目前沒有可跳過的歌曲。')
-            await self._halt(state)
-            self._ensure_runner(state)
+            await self._skip_locked(state)
+
+    async def _skip_locked(self, state: GuildPlayer):
+        if state.current is None:
+            raise MusicError('目前沒有可跳過的歌曲。')
+        await self._halt(state)
+        self._ensure_runner(state)
 
     async def stop(self, guild_id: int):
         async with self._lock(guild_id):
             state = self._require_state(guild_id)
-            self._revisions[guild_id] = self._revisions.get(guild_id, 0) + 1
-            state.loop_mode = LoopMode.OFF
-            state.queue.clear()
-            await self._halt(state)
-            state.status = 'stopped'
-            await self._notify(state, 'stopped')
+            await self._stop_locked(state)
+
+    async def _stop_locked(self, state: GuildPlayer):
+        guild_id = state.guild_id
+        self._revisions[guild_id] = self._revisions.get(guild_id, 0) + 1
+        state.loop_mode = LoopMode.OFF
+        state.queue.clear()
+        await self._halt(state)
+        state.status = 'stopped'
+        await self._notify(state, 'stopped')
+
+    async def dashboard_control(
+        self, guild_id: int, action: str, *, session_id: int, generation: str, mode=None,
+    ) -> dict:
+        """Called only after HTTP owner authorization; validate under the mutation lock."""
+        async with self._lock(guild_id):
+            state = self._require_state(guild_id)
+            if self._closed or generation != self.generation or session_id != state.session_id:
+                raise MusicError('播放工作階段已更新，請重新整理後再操作。')
+            if action in ('pause', 'resume'):
+                await self._pause_locked(state, action == 'pause')
+            elif action == 'skip':
+                await self._skip_locked(state)
+            elif action == 'stop':
+                await self._stop_locked(state)
+            elif action == 'leave':
+                self._revisions[guild_id] = self._revisions.get(guild_id, 0) + 1
+                await self._leave_locked(state)
+            elif action == 'loop':
+                try:
+                    loop_mode = LoopMode(mode)
+                except (ValueError, TypeError):
+                    raise MusicError('無效的循環模式。') from None
+                await self._set_loop_locked(state, loop_mode)
+            else:
+                raise MusicError('不支援的音樂操作。')
+            return self.snapshot(guild_id)
 
     async def leave(self, guild_id: int):
         async with self._lock(guild_id):

@@ -15,7 +15,7 @@ from utils.time_helper import TIMEZONE
 log = logging.getLogger(__name__)
 
 # 防禦式讀取：缺欄位只停用每日標功能，不讓整個 cog 掛掉
-DAILY_CHANNEL_ID = settings.get('DAILY_CHANNEL_ID')
+DAILY_CHANNEL_ID = settings.get("DAILY_CHANNEL_ID")
 
 
 class Task(CogExtension):
@@ -25,7 +25,7 @@ class Task(CogExtension):
         if DAILY_CHANNEL_ID:
             self.daily_ping.start()
         else:
-            log.warning('⚠️ 未設定 DAILY_CHANNEL_ID，每日隨機標排程停用（查詢指令仍可使用）')
+            log.warning("⚠️ 未設定 DAILY_CHANNEL_ID，每日隨機標排程停用（查詢指令仍可使用）")
 
     def cog_unload(self):
         try:
@@ -39,13 +39,17 @@ class Task(CogExtension):
 
     @tasks.loop(time=datetime.time(hour=0, minute=0, second=0, tzinfo=TIMEZONE))
     async def daily_ping(self):
+        await self._send_daily_ping(source="scheduled")
+
+    async def _send_daily_ping(self, *, source: str):
+        """發送每日標記，成功送出後才記錄事件和累計。"""
         channel = self.bot.get_channel(DAILY_CHANNEL_ID)
         if channel is None:
             # 快取未暖時 get_channel 會回 None，改直接向 API 查詢
             try:
                 channel = await self.bot.fetch_channel(DAILY_CHANNEL_ID)
             except discord.HTTPException:
-                log.warning('⚠️ 找不到頻道 %s', DAILY_CHANNEL_ID)
+                log.warning("⚠️ 找不到頻道 %s", DAILY_CHANNEL_ID)
                 return
 
         guild = channel.guild
@@ -58,12 +62,18 @@ class Task(CogExtension):
         chosen = random.choice(members)
 
         # Bot 預設 allowed_mentions=none，這裡是真的要標人，需明確允許
-        await channel.send(
-            f'每日隨機標 {chosen.mention}',
+        message = await channel.send(
+            f"每日隨機標 {chosen.mention}",
             allowed_mentions=discord.AllowedMentions(users=True),
         )
-        # 訊息成功送出後才累計次數並記錄時間，避免把發送失敗算成被標記
-        self.db.add_ping(chosen.id)
+        # 訊息成功送出後才寫入明細和累計，避免發送失敗被計入。
+        self.db.add_ping(
+            chosen.id,
+            guild_id=guild.id,
+            channel_id=channel.id,
+            message_id=message.id,
+            source=source,
+        )
 
     @daily_ping.before_loop
     async def before_daily_ping(self):
@@ -74,20 +84,22 @@ class Task(CogExtension):
     #  查詢指令（前綴 + 斜線）
     # ==========================================
 
-    @commands.hybrid_command(name='ping_count', description='查看某位成員被標的次數')
-    @app_commands.describe(member='要查詢的成員（不填則查詢自己）')
+    @commands.hybrid_command(name="ping_count", description="查看某位成員被標的次數")
+    @app_commands.describe(member="要查詢的成員（不填則查詢自己）")
     async def ping_count(self, ctx, member: discord.Member = None):
         member = member or ctx.author
         count = self.db.get_count(member.id)
 
         embed = discord.Embed(
-            description=f'📊 {member.mention} 被標了 **{count}** 次',
+            description=f"📊 {member.mention} 被標了 **{count}** 次",
             color=COLOR_INFO,
         )
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name='ping_stats', description='查看某位成員被標記的比例及上次被標記時間')
-    @app_commands.describe(member='要查詢的成員（不填則查詢自己）')
+    @commands.hybrid_command(
+        name="ping_stats", description="查看某位成員被標記的比例及上次被標記時間"
+    )
+    @app_commands.describe(member="要查詢的成員（不填則查詢自己）")
     async def ping_stats(self, ctx, member: discord.Member = None):
         member = member or ctx.author
         count = self.db.get_count(member.id)
@@ -96,62 +108,62 @@ class Task(CogExtension):
         last_ping = self.db.get_last_ping(member.id)
 
         if last_ping is not None:
-            last_ping_text = f'<t:{last_ping}:F>（<t:{last_ping}:R>）'
+            last_ping_text = f"<t:{last_ping}:F>（<t:{last_ping}:R>）"
         elif count:
-            last_ping_text = '尚無時間紀錄（舊資料未記錄時間）'
+            last_ping_text = "尚無時間紀錄（舊資料未記錄時間）"
         else:
-            last_ping_text = '尚未被標記'
+            last_ping_text = "尚未被標記"
 
         embed = discord.Embed(
-            title='📊 每日隨機標個人統計',
+            title="📊 每日隨機標個人統計",
             description=member.mention,
             color=COLOR_INFO,
         )
-        embed.add_field(name='被標記次數', value=f'**{count}** 次')
-        embed.add_field(name='標記總數', value=f'**{total}** 次')
-        embed.add_field(name='被標記比例', value=f'**{percentage:.2f}%**')
-        embed.add_field(name='上次被標記時間', value=last_ping_text, inline=False)
-        embed.set_footer(text='被標記比例 = 個人被標記次數 ÷ 標記總數 × 100%')
+        embed.add_field(name="被標記次數", value=f"**{count}** 次")
+        embed.add_field(name="標記總數", value=f"**{total}** 次")
+        embed.add_field(name="被標記比例", value=f"**{percentage:.2f}%**")
+        embed.add_field(name="上次被標記時間", value=last_ping_text, inline=False)
+        embed.set_footer(text="被標記比例 = 個人被標記次數 ÷ 標記總數 × 100%")
         await ctx.send(embed=embed)
 
-    @commands.hybrid_command(name='ping_rank', description='查看被標次數排行榜')
-    @app_commands.describe(top='顯示前幾名（預設 10）')
+    @commands.hybrid_command(name="ping_rank", description="查看被標次數排行榜")
+    @app_commands.describe(top="顯示前幾名（預設 10）")
     async def ping_rank(self, ctx, top: int = 10):
         top = max(1, min(top, 25))  # 限制 1~25
 
         rows = self.db.get_leaderboard(top)
         total = self.db.get_total_count()
 
-        medals = ['🥇', '🥈', '🥉']
-        description = ''
+        medals = ["🥇", "🥈", "🥉"]
+        description = ""
 
         for i, (user_id, count) in enumerate(rows):
-            medal = medals[i] if i < 3 else f'`#{i + 1}`'
+            medal = medals[i] if i < 3 else f"`#{i + 1}`"
             member = ctx.guild.get_member(user_id)
-            name = member.display_name if member else f'未知用戶 ({user_id})'
-            description += f'{medal} **{name}** — {count} 次\n'
+            name = member.display_name if member else f"未知用戶 ({user_id})"
+            description += f"{medal} **{name}** — {count} 次\n"
 
         embed = discord.Embed(
-            title='🏆 每日隨機標排行榜',
-            description=description or '📊 目前還沒有任何人被標過！',
+            title="🏆 每日隨機標排行榜",
+            description=description or "📊 目前還沒有任何人被標過！",
             color=COLOR_GOLD,
             timestamp=datetime.datetime.now(tz=TIMEZONE),
         )
-        embed.add_field(name='標記總數', value=f'**{total}** 次', inline=False)
+        embed.add_field(name="標記總數", value=f"**{total}** 次", inline=False)
         await ctx.send(embed=embed)
 
     # ==========================================
     #  手動觸發測試
     # ==========================================
 
-    @commands.hybrid_command(name='test_daily', description='手動觸發每日標（測試用）')
+    @commands.hybrid_command(name="test_daily", description="手動觸發每日標（測試用）")
     @commands.has_permissions(administrator=True)
     async def test_daily(self, ctx):
         """手動執行一次每日標記，方便測試"""
         if not DAILY_CHANNEL_ID:
-            return await ctx.send('⚠️ 未設定 DAILY_CHANNEL_ID，無法觸發每日標。', ephemeral=True)
-        await self.daily_ping()
-        await ctx.send('✅ 已手動觸發每日標', ephemeral=True)
+            return await ctx.send("⚠️ 未設定 DAILY_CHANNEL_ID，無法觸發每日標。", ephemeral=True)
+        await self._send_daily_ping(source="manual")
+        await ctx.send("✅ 已手動觸發每日標", ephemeral=True)
 
 
 async def setup(bot):

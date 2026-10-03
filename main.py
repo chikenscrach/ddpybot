@@ -20,6 +20,8 @@ intents.members = True
 
 
 class DDBot(commands.Bot):
+    dashboard = None
+
     async def setup_hook(self):
         # 逐個載入，單一 cog 失敗不影響其他模組
         for file in sorted(CMDS_DIR.glob('*.py')):
@@ -35,6 +37,24 @@ class DDBot(commands.Bot):
         # 避免 on_ready 重連時重複同步觸發速率限制
         synced = await self.tree.sync()
         log.info('🔄 已同步 %d 個斜線指令', len(synced))
+
+        # Started once, on the bot loop; reconnecting the gateway must not
+        # create another listener or a second set of browser sessions.
+        from dashboard.auth import DashboardConfig
+        from dashboard.server import DashboardServer
+
+        config = DashboardConfig.from_env()
+        if config.enabled:
+            self.dashboard = DashboardServer(self, config)
+            await self.dashboard.start()
+
+    async def close(self):
+        try:
+            if self.dashboard is not None:
+                await self.dashboard.close()
+                self.dashboard = None
+        finally:
+            await super().close()
 
 
 bot = DDBot(

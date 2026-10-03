@@ -243,6 +243,78 @@ docker compose -f docker-compose.yml -f docker-compose.cookies.yml up -d --build
 
 ---
 
+## 🖥️ Owner Dashboard
+
+Dashboard 提供四個頁面：Bot 運行總覽、每日隨機標記分析、音樂播放與設定。它與 Bot 共用同一個 Python 程序，透過既有 `aiohttp` 提供網頁，不需要額外的 Node.js 執行環境。
+
+- **存取權限**：使用 Discord OAuth2 登入，僅接受此 Bot 應用程式的 owner；團隊應用僅接受團隊 owner。`moderator_ids`、Discord 伺服器管理員及其他團隊成員不取得 dashboard 權限。所有資料 API 都需要登入，寫入操作另驗證 Origin 與 CSRF token。
+- **設定**：可編輯每日頻道、Bot 管理員、AI 供應商／模型與所有 `MUSIC` 設定。先驗證再以原子方式儲存，並保留舊設定中的其他欄位；Token、API Key 不會回傳至網頁。頁面顯示尚未生效的欄位，**儲存後由 owner 重啟 Bot 生效**。設定在其他頁面或外部被更新時會拒絕過期版本，避免覆蓋。
+- **Ping 分析**：這裡的 ping 是每日隨機標人。依台北時間篩選 1～366 天、伺服器與排程／手動來源，顯示圖表、區間排行、歷來排行、最近 100 筆事件，並可匯出 CSV（單次最多 10,000 筆，超過時要求縮小區間）。升級時保留舊累計，從升級後開始保存逐次明細；較早日期顯示無資料，起始日可能不完整。歷來累計涵蓋所有伺服器，不受篩選影響。
+- **音樂**：選擇伺服器查看目前歌曲、近似播放進度與待播清單；可暫停、繼續、跳過、停止、離開及切換循環。每三秒更新狀態；操作會核對播放工作階段，失效頁面不能控制重新建立的播放器。音樂仍在 Discord 語音頻道播放，點歌使用 Discord 指令。佇列在 Bot 重啟後清空。
+- **總覽**：即時 Gateway 延遲、程序 CPU／記憶體、運行時間、伺服器、已載入模組及快取容量。手動清理會保留目前使用中的音檔。這些系統數值目前沒有歷史採樣。
+
+### 登入與本機啟用
+
+在 Discord Developer Portal 選取此 Bot 的應用程式，於 **OAuth2 → Redirects** 登記精確回呼網址。例如本機為 `http://127.0.0.1:8080/auth/callback`，HTTPS 部署為 `https://bot.example.com/auth/callback`。從 OAuth2 頁面取得 Client ID 和 Client Secret，填入本機 `.env`，不要提交至 Git。
+
+```dotenv
+DASHBOARD_ENABLED=true
+DASHBOARD_HOST=127.0.0.1
+DASHBOARD_PORT=8080
+DASHBOARD_PUBLIC_URL=http://127.0.0.1:8080
+DASHBOARD_CLIENT_ID=你的應用程式ID
+DASHBOARD_CLIENT_SECRET=你的OAuth2ClientSecret
+```
+
+Client Secret 與 Bot Token 是不同的憑證。外部使用時 `DASHBOARD_PUBLIC_URL` 必須使用 HTTPS；HTTP 僅允許 localhost／loopback。網址需指向網域根目錄，不能包含子路徑。啟用後執行 `uv run python main.py`，用與 `DASHBOARD_PUBLIC_URL` 相同的網址開啟頁面。
+
+登入有效時間為 8 小時，登出或 Bot 重啟後需要重新登入。登入後仍會核對目前 owner：讀取資料最多沿用 30 秒的驗證結果，修改設定或控制音樂前會向 Discord 重新確認；owner 變更時撤銷舊 owner 的登入，查詢失敗時拒絕操作。Dashboard 預設關閉；啟用但缺少必要設定時會停止啟動並回報設定錯誤。OAuth2 真實登入需要可用的 Discord 憑證與回呼網址。
+
+### Docker 啟用
+
+網頁安全寫入會用同目錄的暫存檔取代設定，因此使用既有 `/app/data` 目錄掛載內的設定檔。先保留現有設定，再準備可寫的設定目錄：
+
+```bash
+mkdir -p data/config
+cp -n setting.json data/config/setting.json
+docker compose build
+docker compose run --rm --no-deps --user root --entrypoint sh discord-bot -c \
+  'chown botuser:botuser /app/data/config /app/data/config/setting.json && chmod 700 /app/data/config && chmod 600 /app/data/config/setting.json'
+```
+
+在 `.env` 填好上方 OAuth2 設定後，使用可選的 Compose 檔：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml up -d --build
+```
+
+啟用此 Compose 檔後，**實際設定來源為 `data/config/setting.json`**；專案根目錄的 `setting.json` 不再是此部署的設定來源。Overlay 會設定 `SETTING_PATH=/app/data/config/setting.json`，且只將網頁連接埠發布至宿主機的 `127.0.0.1:8080`。如需 YouTube cookies，可同時加入 `-f docker-compose.cookies.yml`。
+
+公開網域請由宿主機上的 HTTPS 反向代理轉送至 `127.0.0.1:8080`，並把 `.env` 的 `DASHBOARD_PUBLIC_URL` 與 Discord Redirect 設為同一個 HTTPS 網域。若反向代理也在容器內，使用共同 Docker 網路的 `discord-bot:8080`，不要使用另一個容器自己的 `127.0.0.1`。
+
+網頁儲存設定後，套用方式：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dashboard.yml restart discord-bot
+```
+
+設定頁只寫入一般設定；修改 OAuth2 環境變數後，需重新建立容器以載入新的環境變數。資料庫與音樂快取仍保存在原本的 `data/`，不需移除資料 volume。
+
+### Dashboard 驗證
+
+後端測試包含 owner 身分、CSRF、設定版本衝突與原子寫入、SQLite migration、台北日期邊界、HTTP API 和音樂工作階段控制。沿用既有 Ruff／pytest 命令；HTTP 整合測試需要允許本機 loopback socket。
+
+瀏覽器測試腳本 `scripts/test_dashboard_ui.py` 使用固定 API 資料驗證正式前端，涵蓋桌面／手機、設定表單、音樂控制與錯誤狀態。它不代表已驗證真實 Discord OAuth2、Discord 語音或 YouTube 下載。
+
+```bash
+# 安裝測試瀏覽器（Linux 另需 Playwright 所列的系統函式庫與中文字型）
+uv run --no-project --with playwright==1.63.0 python -m playwright install chromium
+# 終端一：只提供靜態測試頁面，綁定 localhost，不啟動 Bot
+uv run --no-sync python scripts/serve_dashboard_ui.py
+# 終端二：以固定 API 資料執行測試，截圖寫入 /tmp/ddpybot-dashboard-ui
+uv run --no-project --with playwright==1.63.0 python scripts/test_dashboard_ui.py
+```
+
 ## 🚀 部署教學
 
 本專案提供 **Docker 容器化部署 (推薦)** 與 **傳統本機部署** 兩種方式。
