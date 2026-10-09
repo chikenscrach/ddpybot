@@ -365,3 +365,56 @@ class PingDatabase:
             "SELECT user_id, count FROM ping_counts ORDER BY count DESC LIMIT ?", (limit,)
         )
         return cur.fetchall()
+
+
+class StartupNotificationDatabase:
+    """保存各伺服器的機器人啟動通知頻道。"""
+
+    def __init__(self, db_path: str | Path | None = None):
+        db_path = (
+            Path(db_path)
+            if db_path is not None
+            else PROJECT_ROOT / "data" / "startup_notifications.db"
+        )
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.conn = sqlite3.connect(db_path)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
+        with self.conn:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS startup_notification_channels (
+                    guild_id   TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL
+                )
+            """)
+
+    def close(self):
+        """關閉資料庫連線。"""
+        self.conn.close()
+
+    def get_channels(self) -> dict[int, int]:
+        """取得伺服器 ID 對應的啟動通知頻道 ID。"""
+        return {
+            int(guild_id): int(channel_id)
+            for guild_id, channel_id in self.conn.execute(
+                "SELECT guild_id, channel_id FROM startup_notification_channels"
+            )
+        }
+
+    def set_channel(self, guild_id: int, channel_id: int | None) -> None:
+        """設定伺服器的通知頻道，或在 channel_id 為 None 時停用。"""
+        with self.conn:
+            if channel_id is None:
+                self.conn.execute(
+                    "DELETE FROM startup_notification_channels WHERE guild_id = ?",
+                    (str(guild_id),),
+                )
+            else:
+                self.conn.execute(
+                    """
+                    INSERT INTO startup_notification_channels (guild_id, channel_id)
+                    VALUES (?, ?)
+                    ON CONFLICT(guild_id) DO UPDATE SET channel_id = excluded.channel_id
+                    """,
+                    (str(guild_id), str(channel_id)),
+                )

@@ -21,6 +21,7 @@ intents.members = True
 
 class DDBot(commands.Bot):
     dashboard = None
+    startup_notifications_sent = False
 
     async def setup_hook(self):
         # 逐個載入，單一 cog 失敗不影響其他模組

@@ -2,7 +2,7 @@ import sqlite3
 from datetime import date
 
 from services import database as database_module
-from services.database import PingDatabase
+from services.database import PingDatabase, StartupNotificationDatabase
 
 
 def test_empty_database(tmp_path):
@@ -240,3 +240,35 @@ def test_export_events_sorts_and_reports_truncation(tmp_path, monkeypatch):
     assert result["truncated"] is True
     assert [event["message_id"] for event in result["events"]] == ["2"]
     db.close()
+
+
+def test_startup_notification_channels_are_guild_scoped_and_persist(tmp_path):
+    db_path = tmp_path / "startup_notifications.db"
+    db = StartupNotificationDatabase(db_path)
+    guild_id = 2**63 + 10
+    channel_id = 2**63 + 100
+
+    assert db.get_channels() == {}
+    db.set_channel(guild_id, channel_id)
+    db.set_channel(20, 200)
+    db.set_channel(guild_id, channel_id + 1)
+    assert db.get_channels() == {guild_id: channel_id + 1, 20: 200}
+    db.close()
+
+    reopened = StartupNotificationDatabase(db_path)
+    assert reopened.get_channels() == {guild_id: channel_id + 1, 20: 200}
+    reopened.close()
+
+
+def test_startup_notification_channel_can_be_disabled_idempotently(tmp_path):
+    db_path = tmp_path / "startup_notifications.db"
+    db = StartupNotificationDatabase(db_path)
+    db.set_channel(10, 100)
+    db.set_channel(10, None)
+    db.set_channel(10, None)
+    assert db.get_channels() == {}
+    db.close()
+
+    reopened = StartupNotificationDatabase(db_path)
+    assert reopened.get_channels() == {}
+    reopened.close()

@@ -15,6 +15,7 @@ DDPYBOT 是以 `discord.py` 開發的多功能 Discord Bot，整合 AI 對話、
 - **音樂播放**：YouTube 點歌、播放清單、佇列、單曲／清單循環、本機快取與 FFmpeg 播放。
 - **資訊查詢**：中央氣象署地震資訊、PTT 文章與 Danbooru 圖片。
 - **社群功能**：每日隨機標記、排行榜、統計與管理指令。
+- **啟動通知**：各伺服器可指定通知頻道，機器人每次啟動時通知一次，也可停用。
 - **互動介面**：Discord Buttons、Views、分頁與系統資訊面板。
 - **Owner Dashboard**：Discord OAuth2 登入、狀態總覽、Ping 分析、音樂控制與設定管理。
 - **部署與維運**：Docker Compose、旋轉日誌、pytest、Ruff 與 GitHub Actions CI。
@@ -41,6 +42,15 @@ uv run python main.py
 ```
 
 至少需要在 `.env` 設定 `TOKEN`。AI、地震與 Dashboard 等功能會依啟用項目需要額外 API Key 或 OAuth2 設定。
+
+### 啟動通知
+
+具有「管理伺服器」權限的成員可使用：
+
+- `/startupnotify action:set channel:#通知頻道`：設定或更換通知頻道，下次啟動時發送通知。
+- `/startupnotify action:disable`：停用此伺服器的啟動通知。
+
+預設停用，每個伺服器各自保存一個文字頻道；Bot 需要在該頻道擁有「查看頻道」與「傳送訊息」權限。設定存於 `data/startup_notifications.db`，現有 Docker Compose 的 `data/` 掛載會保留設定。Discord 重新連線或重載模組不會重複通知；頻道被刪除或無法發送時會記錄日誌，不影響其他伺服器。
 
 ## 文件
 
