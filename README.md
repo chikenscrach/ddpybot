@@ -12,12 +12,12 @@ DDPYBOT 是以 `discord.py` 開發的多功能 Discord Bot，整合 AI 對話、
 ## 主要功能
 
 - **AI 對話**：OpenRouter / Groq，多輪上下文、引用訊息與圖片輸入。
-- **音樂播放**：YouTube 點歌、播放清單、佇列、單曲／清單循環、本機快取與 FFmpeg 播放。
+- **音樂播放**：YouTube 點歌、播放清單、佇列、單曲／清單循環、播放紀錄與快速重播、本機快取與 FFmpeg 播放。
 - **資訊查詢**：中央氣象署地震資訊、PTT 文章與 Danbooru 圖片。
 - **社群功能**：每日隨機標記、排行榜、統計與管理指令。
 - **啟動通知**：各伺服器可指定通知頻道，機器人每次啟動時通知一次，也可停用。
 - **互動介面**：Discord Buttons、Views、分頁與系統資訊面板。
-- **Owner Dashboard**：Discord OAuth2 登入、狀態總覽、Ping 分析、音樂控制與設定管理。
+- **Owner Dashboard**：Discord OAuth2 登入、狀態總覽、Ping 分析、音樂控制、播放紀錄與設定管理。
 - **部署與維運**：Docker Compose、旋轉日誌、pytest、Ruff 與 GitHub Actions CI。
 
 ## 快速開始
@@ -42,6 +42,16 @@ uv run python main.py
 ```
 
 至少需要在 `.env` 設定 `TOKEN`。AI、地震與 Dashboard 等功能會依啟用項目需要額外 API Key 或 OAuth2 設定。
+
+### 音樂播放紀錄
+
+- `/history`：分頁查看自己在目前伺服器的播放紀錄。
+- `/history user:@成員`：查看該成員在目前伺服器的播放紀錄。
+- 在紀錄下拉選單選歌，即可將歌曲重新加入待播清單，不必再次輸入網址。重新點播會記在操作人的名下，並沿用一般點歌的語音頻道、Bot 權限及佇列容量檢查。
+
+紀錄從更新後歌曲實際開始播放時累積，包含單曲／清單循環的每次開始；暫停後繼續播放不會新增紀錄。只有排入佇列、下載失敗或尚未開始播放的歌曲不會列入，也無法補回更新前的紀錄。
+
+資料存於 `data/music_history.db`，重啟及清理音樂快取後仍會保留，現有 Docker Compose 的 `data/` 掛載也會保存紀錄。Owner Dashboard 的音樂頁可依伺服器與點歌者篩選、分頁查看紀錄；紀錄區不提供快速播放。
 
 ### 啟動通知
 

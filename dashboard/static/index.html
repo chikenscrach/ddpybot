@@ -251,6 +251,40 @@
               </p>
             </article>
           </div>
+          <article class="panel music-history-panel" aria-labelledby="music-history-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">PLAY HISTORY</p>
+                <h2 id="music-history-title">播放紀錄</h2>
+              </div>
+              <div class="music-history-summary">
+                <span id="music-history-total" class="count">0 筆</span>
+                <button id="music-history-refresh" class="button secondary" type="button">
+                  重新整理 ↻
+                </button>
+              </div>
+            </div>
+            <div class="music-history-toolbar">
+              <label class="inline-label" for="music-history-requester">
+                點歌者
+                <select id="music-history-requester" aria-label="依點歌者篩選">
+                  <option value="">全部點歌者</option>
+                </select>
+              </label>
+              <span id="music-history-page" class="small muted">第 1 / 1 頁</span>
+            </div>
+            <div id="music-history-list" class="music-history-list" aria-live="polite">
+              <div class="empty">載入播放紀錄中…</div>
+            </div>
+            <nav class="music-history-pagination" aria-label="播放紀錄分頁">
+              <button id="music-history-prev" class="button secondary" type="button" disabled>
+                ← 上一頁
+              </button>
+              <button id="music-history-next" class="button secondary" type="button" disabled>
+                下一頁 →
+              </button>
+            </nav>
+          </article>
         </section>
         <section id="view-settings" class="view" aria-label="設定" hidden>
           <div class="intro-line">

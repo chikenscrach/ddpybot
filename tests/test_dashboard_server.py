@@ -12,6 +12,8 @@ from aiohttp.test_utils import TestClient, TestServer
 from dashboard.server import DashboardServer
 from services.config_service import ConfigRevisionConflict
 from services.database import PingDatabase
+from services.music_cache import Track
+from services.music_history import MusicHistoryDatabase
 
 
 class FakeAuth:
@@ -146,6 +148,96 @@ def owner_headers(*, write=False):
     return headers
 
 
+def test_music_history_filters_paginates_and_keeps_guilds_isolated(tmp_path):
+    server, auth, db, music = make_server(tmp_path)
+    history = MusicHistoryDatabase(tmp_path / 'music_history.db')
+    music.history = history
+    user_id = 1234567890123456789
+    for title, requester, guild in (
+        ('First', user_id, 111), ('Other member', 789, 111),
+        ('Second', user_id, 111), ('Private guild', user_id, 222),
+    ):
+        history.record(guild, Track(title, title, 'https://www.youtube.com/watch?v=abcdefghijk', 60, requester_id=requester))
+
+    async def check(client):
+        headers = owner_headers()
+        response = await client.get('/api/music/111/history?limit=2', headers=headers)
+        assert response.status == 200
+        data = await response.json()
+        assert data['total'] == 3
+        assert [item['title'] for item in data['items']] == ['Second', 'Other member']
+        assert data['items'][0]['requester_id'] == str(user_id)
+        assert data['items'][0]['requester_name'] == f'member-{user_id}'
+        assert {item['id'] for item in data['requesters']} == {str(user_id), '789'}
+        assert response.headers['Cache-Control'] == 'no-store'
+        response = await client.get(
+            f'/api/music/111/history?requester_id={user_id}&limit=1&offset=1', headers=headers,
+        )
+        data = await response.json()
+        assert response.status == 200
+        assert data['total'] == 2
+        assert [item['title'] for item in data['items']] == ['First']
+        assert data['limit'] == 1 and data['offset'] == 1
+        response = await client.get('/api/music/111/history?requester_id=999', headers=headers)
+        data = await response.json()
+        assert data['total'] == 0 and data['items'] == []
+        response = await client.get('/api/music/111/history?offset=100', headers=headers)
+        data = await response.json()
+        assert data['total'] == 3 and data['items'] == []
+        auth.verify_owner.assert_awaited()
+        music.dashboard_control.assert_not_awaited()
+
+    try:
+        run_http(server, check)
+    finally:
+        history.close()
+        db.close()
+
+
+@pytest.mark.parametrize('query', [
+    'limit=0', 'limit=101', 'limit=-1', 'limit=abc', 'limit=1.5',
+    'offset=-1', 'offset=abc', 'offset=9223372036854775808',
+    'requester_id=abc', 'requester_id=-1', 'requester_id=0',
+    'requester_id=18446744073709551616', 'requester_id=１２３',
+])
+def test_music_history_rejects_invalid_filters(tmp_path, query):
+    server, _, db, _ = make_server(tmp_path)
+
+    async def check(client):
+        response = await client.get(f'/api/music/111/history?{query}', headers=owner_headers())
+        assert response.status == 400
+
+    try:
+        run_http(server, check)
+    finally:
+        db.close()
+
+
+def test_music_history_requires_current_owner_and_available_guild_and_service(tmp_path):
+    server, auth, db, music = make_server(tmp_path)
+    music.history = None
+
+    async def check(client):
+        for path, status in (
+            ('/api/music/invalid/history', 400),
+            ('/api/music/999/history', 404),
+            ('/api/music/111/history', 503),
+        ):
+            response = await client.get(path, headers=owner_headers())
+            assert response.status == status
+        server.bot.cogs.pop('Music')
+        response = await client.get('/api/music/111/history', headers=owner_headers())
+        assert response.status == 503
+        auth.verify_owner.side_effect = web.HTTPForbidden(text='ownership changed')
+        response = await client.get('/api/music/111/history', headers=owner_headers())
+        assert response.status == 403
+
+    try:
+        run_http(server, check)
+    finally:
+        db.close()
+
+
 def test_every_api_route_rejects_unauthenticated_requests(tmp_path):
     server, auth, db, _ = make_server(tmp_path)
     requests = [
@@ -156,6 +248,7 @@ def test_every_api_route_rejects_unauthenticated_requests(tmp_path):
         ("GET", "/api/ping", None),
         ("GET", "/api/ping/export", None),
         ("GET", "/api/music/111", None),
+        ("GET", "/api/music/111/history", None),
         (
             "POST",
             "/api/music/111/control",

@@ -32,6 +32,22 @@ LARGE_MODERATOR_IDS = ["18446744073709551614", "9223372036854775807"]
 XSS_PAYLOAD = '<img src=x onerror="window.__dashboardSmokeXss = true">'
 CSRF_TOKEN = "dashboard-ui-fixture-csrf"
 OTHER_GUILD_ID = "18446744073709551612"
+HISTORY_REQUESTER_ID = "123456789012345678"
+HISTORY_OTHER_REQUESTER_ID = "123456789012345681"
+MUSIC_HISTORY = [
+    {
+        "id": 9000 + index,
+        "guild_id": GUILD_ID,
+        "requester_id": HISTORY_REQUESTER_ID if index < 11 else HISTORY_OTHER_REQUESTER_ID,
+        "requester_name": "Music Listener" if index < 11 else XSS_PAYLOAD,
+        "title": XSS_PAYLOAD if index == 0 else f"History Track {index + 1}",
+        "url": "javascript:alert(1)" if index == 1 else f"https://music.example.invalid/track-{index + 1}",
+        "duration": 95 + index,
+        "thumbnail": None,
+        "played_at": int(datetime(2026, 10, 10, tzinfo=timezone.utc).timestamp()) - index * 300,
+    }
+    for index in range(12)
+]
 PING_EVENTS = (
     {"day": "2026-10-01", "user_id": "123456789012345678", "name": XSS_PAYLOAD,
      "guild_id": GUILD_ID, "source": "scheduled"},
@@ -96,6 +112,7 @@ def _new_state() -> dict[str, Any]:
         "control_actions": [],
         "mutation_csrf": [],
         "ping_queries": [],
+        "music_history_queries": [],
         "logout_count": 0,
         "music": _new_music_state(),
     }
@@ -136,6 +153,11 @@ def _overview_fixture() -> dict[str, Any]:
             "name": XSS_PAYLOAD,
             "icon": None,
             "member_count": 128,
+        }, {
+            "id": OTHER_GUILD_ID,
+            "name": "History Empty Server",
+            "icon": None,
+            "member_count": 42,
         }],
         "cogs": ["Music", "Task"],
         "ping_total": 57,
@@ -235,6 +257,39 @@ def _api_route(route: Route, state: dict[str, Any]) -> None:
     elif path == "/api/ping" and method == "GET":
         state["ping_queries"].append(parse_qs(urlsplit(request.url).query, keep_blank_values=True))
         _json_response(route, _ping_fixture(request.url))
+    elif path.startswith("/api/music/") and path.endswith("/history") and method == "GET":
+        parts = path.strip("/").split("/")
+        guild_id = parts[2]
+        query = parse_qs(urlsplit(request.url).query, keep_blank_values=True)
+        limit = max(1, int(query.get("limit", ["10"])[0]))
+        offset = max(0, int(query.get("offset", ["0"])[0]))
+        requester_id = query.get("requester_id", [""])[0]
+        state["music_history_queries"].append({
+            "guild_id": guild_id,
+            "requester_id": requester_id,
+            "limit": limit,
+            "offset": offset,
+        })
+        guild_items = [item for item in MUSIC_HISTORY if item["guild_id"] == guild_id]
+        requesters = {
+            item["requester_id"]: {
+                "id": item["requester_id"],
+                "name": item["requester_name"],
+            }
+            for item in guild_items
+        }
+        filtered = [
+            item for item in guild_items
+            if not requester_id or item["requester_id"] == requester_id
+        ]
+        filtered.sort(key=lambda item: (item["played_at"], item["id"]), reverse=True)
+        _json_response(route, {
+            "items": filtered[offset : offset + limit],
+            "total": len(filtered),
+            "limit": limit,
+            "offset": offset,
+            "requesters": sorted(requesters.values(), key=lambda item: item["id"]),
+        })
     elif path == "/api/settings" and method == "GET":
         _json_response(route, state["settings"])
     elif path == "/api/settings" and method == "PUT":
@@ -282,7 +337,19 @@ def _api_route(route: Route, state: dict[str, Any]) -> None:
             music["queue"] = []
         _json_response(route, {"ok": True})
     elif path.startswith("/api/music/") and method == "GET":
-        _json_response(route, copy.deepcopy(state["music"]))
+        snapshot = copy.deepcopy(state["music"])
+        guild_id = path.strip("/").split("/")[2]
+        if guild_id == OTHER_GUILD_ID:
+            snapshot.update({
+                "guild_id": OTHER_GUILD_ID,
+                "status": "disconnected",
+                "session_id": None,
+                "current": None,
+                "voice_channel_id": None,
+                "voice_channel_name": None,
+                "queue": [],
+            })
+        _json_response(route, snapshot)
     else:
         _json_response(route, {"error": f"no fixture for {method} {path}"}, status=404)
 
@@ -459,11 +526,122 @@ def _exercise_dashboard(page: Page, state: dict[str, Any], screenshots: Path, vi
                 "(payload) => document.querySelector('#song-title')?.textContent === payload",
                 arg=XSS_PAYLOAD,
             )
+            page.wait_for_function(
+                "() => document.querySelector('#music-history-list .music-history-row')?.textContent"
+            )
             assert page.locator("#song-title").inner_text() == XSS_PAYLOAD
             assert page.locator("#song-requester").inner_text().endswith(XSS_PAYLOAD)
             assert page.locator("#queue-list").inner_text().startswith("待播清單目前是空的。")
             assert page.locator("#album img[onerror]").count() == 0
+            assert page.locator("#music-history-total").inner_text() == "12 筆"
+            assert page.locator("#music-history-list .music-history-row").count() == 10
+            assert page.locator("#music-history-page").inner_text() == "第 1 / 2 頁"
+            first_history_row = page.locator("#music-history-list .music-history-row").first
+            assert first_history_row.locator(".music-history-title").inner_text() == XSS_PAYLOAD
+            assert first_history_row.locator("a.music-history-title").get_attribute("href") == (
+                "https://music.example.invalid/track-1"
+            )
+            assert "1:35" in first_history_row.locator(".music-history-time").inner_text()
+            unsafe_url_row = page.locator("#music-history-list .music-history-row").nth(1)
+            assert unsafe_url_row.locator(".music-history-title").inner_text() == "History Track 2"
+            assert unsafe_url_row.locator("a.music-history-title").count() == 0
+            assert page.locator("#music-history-list a[href^='javascript:']").count() == 0
+            assert page.locator("#music-history-list button").count() == 0
+            assert page.locator("#music-history-list img[onerror]").count() == 0
             assert page.evaluate("window.__dashboardSmokeXss") is False
+            _screenshot(page, screenshots, f"{viewport_name}-music-history")
+
+            with page.expect_response(
+                lambda response: response.request.method == "GET"
+                and urlsplit(response.url).path == f"/api/music/{GUILD_ID}/history"
+                and parse_qs(urlsplit(response.url).query).get("offset") == ["10"]
+            ) as history_page_two:
+                page.locator("#music-history-next").click()
+            assert history_page_two.value.status == 200
+            assert page.locator("#music-history-list .music-history-row").count() == 2
+            assert page.locator("#music-history-page").inner_text() == "第 2 / 2 頁"
+            assert state["music_history_queries"][-1] == {
+                "guild_id": GUILD_ID,
+                "requester_id": "",
+                "limit": 10,
+                "offset": 10,
+            }
+            with page.expect_response(
+                lambda response: response.request.method == "GET"
+                and urlsplit(response.url).path == f"/api/music/{GUILD_ID}/history"
+                and parse_qs(urlsplit(response.url).query).get("offset") == ["0"]
+            ) as history_page_one:
+                page.locator("#music-history-prev").click()
+            assert history_page_one.value.status == 200
+            expect(page.locator("#music-history-list .music-history-row")).to_have_count(10)
+            expect(page.locator("#music-history-page")).to_have_text("第 1 / 2 頁")
+
+            with page.expect_response(
+                lambda response: response.request.method == "GET"
+                and urlsplit(response.url).path == f"/api/music/{GUILD_ID}/history"
+                and parse_qs(urlsplit(response.url).query).get("requester_id")
+                == [HISTORY_OTHER_REQUESTER_ID]
+            ) as history_requester_filter:
+                page.locator("#music-history-requester").select_option(
+                    HISTORY_OTHER_REQUESTER_ID
+                )
+            assert history_requester_filter.value.status == 200
+            expect(page.locator("#music-history-total")).to_have_text("1 筆")
+            expect(page.locator("#music-history-list .music-history-row")).to_have_count(1)
+            assert XSS_PAYLOAD in page.locator("#music-history-list").inner_text()
+            assert page.locator("#music-history-list img[onerror]").count() == 0
+            assert page.evaluate("window.__dashboardSmokeXss") is False
+
+            with page.expect_response(
+                lambda response: response.request.method == "GET"
+                and urlsplit(response.url).path == f"/api/music/{GUILD_ID}/history"
+                and parse_qs(urlsplit(response.url).query).get("requester_id")
+                == [HISTORY_REQUESTER_ID]
+            ) as history_primary_requester:
+                page.locator("#music-history-requester").select_option(
+                    HISTORY_REQUESTER_ID
+                )
+            assert history_primary_requester.value.status == 200
+            expect(page.locator("#music-history-total")).to_have_text("11 筆")
+            expect(page.locator("#music-history-page")).to_have_text("第 1 / 2 頁")
+            with page.expect_response(
+                lambda response: response.request.method == "GET"
+                and urlsplit(response.url).path == f"/api/music/{GUILD_ID}/history"
+                and parse_qs(urlsplit(response.url).query).get("requester_id")
+                == [HISTORY_REQUESTER_ID]
+                and parse_qs(urlsplit(response.url).query).get("offset") == ["10"]
+            ) as filtered_history_page_two:
+                page.locator("#music-history-next").click()
+            assert filtered_history_page_two.value.status == 200
+            expect(page.locator("#music-history-list .music-history-row")).to_have_count(1)
+            expect(page.locator("#music-history-page")).to_have_text("第 2 / 2 頁")
+
+            with page.expect_response(
+                lambda response: response.request.method == "GET"
+                and urlsplit(response.url).path == f"/api/music/{OTHER_GUILD_ID}/history"
+            ) as empty_guild_history:
+                page.locator("#music-guild").select_option(OTHER_GUILD_ID)
+            assert empty_guild_history.value.status == 200
+            expect(page.locator("#music-history-requester")).to_have_value("")
+            expect(page.locator("#music-history-page")).to_have_text("第 1 / 1 頁")
+            expect(page.locator("#music-history-total")).to_have_text("0 筆")
+            assert "沒有符合條件的播放紀錄" in page.locator("#music-history-list").inner_text()
+            assert page.locator("#music-history-list button").count() == 0
+            assert state["music_history_queries"][-1] == {
+                "guild_id": OTHER_GUILD_ID,
+                "requester_id": "",
+                "limit": 10,
+                "offset": 0,
+            }
+            expect(page.locator("#music-status")).to_have_text("已離線")
+
+            with page.expect_response(
+                lambda response: response.request.method == "GET"
+                and urlsplit(response.url).path == f"/api/music/{GUILD_ID}"
+            ) as reconnect_guild:
+                page.locator("#music-guild").select_option(GUILD_ID)
+            assert reconnect_guild.value.status == 200
+            expect(page.locator("#pause-music")).to_be_enabled()
 
             _expect_control_and_refresh(
                 page, lambda: page.locator("#pause-music").click()

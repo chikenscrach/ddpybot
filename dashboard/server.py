@@ -47,6 +47,7 @@ class DashboardServer:
             web.get('/api/ping', self.ping),
             web.get('/api/ping/export', self.export_ping),
             web.get('/api/music/{guild_id}', self.music),
+            web.get('/api/music/{guild_id}/history', self.music_history),
             web.post('/api/music/{guild_id}/control', self.control),
             web.post('/api/cache/clear', self.clear_cache),
         ])
@@ -219,6 +220,37 @@ class DashboardServer:
         data = self._cog('Music').service.snapshot(guild.id)
         for song in ([data['current']] if data['current'] else []) + data['queue']:
             song['requester_name'] = self._user(song['requester_id']) if song['requester_id'] else '未知'
+        return web.json_response(data)
+
+    async def music_history(self, request):
+        guild = self._guild(request.match_info['guild_id'])
+        requester_id = request.query.get('requester_id') or None
+        if requester_id is not None:
+            if (
+                not requester_id.isascii() or not requester_id.isdecimal()
+                or len(requester_id) > 20 or not 0 < int(requester_id) < 2**64
+            ):
+                raise web.HTTPBadRequest(reason='無效的使用者 ID。')
+            requester_id = int(requester_id)
+        pagination = {}
+        for key, default, maximum in (('limit', '10', 100), ('offset', '0', 2**63 - 1)):
+            raw = request.query.get(key, default)
+            if not raw.isascii() or not raw.isdecimal() or len(raw) > 19:
+                raise web.HTTPBadRequest(reason='無效的分頁參數。')
+            value = int(raw)
+            if value > maximum or (key == 'limit' and value == 0):
+                raise web.HTTPBadRequest(reason='無效的分頁參數。')
+            pagination[key] = value
+        history = self._cog('Music').service.history
+        if history is None:
+            raise web.HTTPServiceUnavailable(reason='音樂紀錄尚未載入。')
+        data = history.query(guild.id, requester_id=requester_id, **pagination)
+        for item in data['items']:
+            item['requester_name'] = self._user(item['requester_id'])
+        data['requesters'] = [
+            {'id': user_id, 'name': self._user(user_id)}
+            for user_id in history.requesters(guild.id)
+        ]
         return web.json_response(data)
 
     async def control(self, request):

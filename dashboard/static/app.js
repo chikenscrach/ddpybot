@@ -10,6 +10,10 @@ const state = {
   dirty: false,
   busy: false,
   polling: false,
+  musicHistoryRequest: 0,
+  musicHistoryGuildId: null,
+  musicHistoryOffset: 0,
+  musicHistoryLimit: 10,
 };
 const titles = {
   overview: "總覽",
@@ -355,6 +359,142 @@ async function loadMusic() {
   const data = await api(`/api/music/${encodeURIComponent(guild)}`);
   if ($("#music-guild").value === guild) renderMusic(data);
 }
+function resetMusicHistory(guildId) {
+  state.musicHistoryGuildId = guildId;
+  state.musicHistoryOffset = 0;
+  const select = $("#music-history-requester");
+  select.replaceChildren(new Option("全部點歌者", ""));
+  select.dataset.requesters = "[]";
+}
+function updateMusicHistoryRequesters(requesters, guildId, selectedId) {
+  if (state.musicHistoryGuildId !== guildId) resetMusicHistory(guildId);
+  const options = (Array.isArray(requesters) ? requesters : [])
+    .filter((requester) => typeof requester?.id === "string")
+    .map((requester) => ({
+      id: requester.id,
+      name: String(requester.name || requester.id),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, "zh-TW"));
+  const select = $("#music-history-requester");
+  const signature = JSON.stringify(options);
+  if (select.dataset.requesters === signature) return;
+  const selected = select.value;
+  select.replaceChildren(new Option("全部點歌者", ""));
+  options.forEach((requester) =>
+    select.add(new Option(requester.name, requester.id)),
+  );
+  select.dataset.requesters = signature;
+  const preserve = selected || selectedId;
+  if ([...select.options].some((option) => option.value === preserve))
+    select.value = preserve;
+}
+function renderMusicHistory(data, guildId, requesterId, offset) {
+  updateMusicHistoryRequesters(data.requesters, guildId, requesterId);
+  const total = Math.max(0, Number(data.total) || 0);
+  const items = Array.isArray(data.items) ? data.items : [];
+  const limit = Math.max(1, Number(data.limit) || state.musicHistoryLimit);
+  const pageCount = Math.max(1, Math.ceil(total / limit));
+  const page = Math.floor(offset / limit) + 1;
+  $("#music-history-total").textContent = `${number(total)} 筆`;
+  $("#music-history-page").textContent = `第 ${page} / ${pageCount} 頁`;
+  $("#music-history-prev").disabled = offset <= 0;
+  $("#music-history-next").disabled = offset + limit >= total;
+
+  const rows = items.map((item) => {
+    const row = el("article", "music-history-row");
+    const details = el("div", "music-history-details");
+    const title = safeUrl(item.url)
+      ? el("a", "music-history-title", item.title || "未命名歌曲")
+      : el("span", "music-history-title", item.title || "未命名歌曲");
+    if (title instanceof HTMLAnchorElement) {
+      title.href = safeUrl(item.url);
+      title.target = "_blank";
+      title.rel = "noopener noreferrer";
+    }
+    details.append(
+      title,
+      el(
+        "span",
+        "music-history-requester",
+        `點歌者 · ${item.requester_name || item.requester_id || "未知"}`,
+      ),
+    );
+    row.append(
+      details,
+      el(
+        "span",
+        "music-history-time",
+        `${dateTime(item.played_at)} · ${duration(item.duration)}`,
+      ),
+    );
+    return row;
+  });
+  replace(
+    "#music-history-list",
+    ...(rows.length ? rows : [el("div", "empty", "沒有符合條件的播放紀錄。")]),
+  );
+}
+async function loadMusicHistory() {
+  const guildId = $("#music-guild").value;
+  const requesterId = $("#music-history-requester").value;
+  const offset = state.musicHistoryOffset;
+  const requestId = ++state.musicHistoryRequest;
+  const refresh = $("#music-history-refresh");
+  if (!guildId) {
+    refresh.disabled = false;
+    $("#music-history-requester").disabled = true;
+    $("#music-history-total").textContent = "0 筆";
+    $("#music-history-page").textContent = "第 1 / 1 頁";
+    $("#music-history-prev").disabled = true;
+    $("#music-history-next").disabled = true;
+    replace("#music-history-list", el("div", "empty", "請先選擇伺服器。"));
+    return;
+  }
+  refresh.disabled = true;
+  $("#music-history-requester").disabled = false;
+  replace("#music-history-list", el("div", "empty", "載入播放紀錄中…"));
+  const query = new URLSearchParams({
+    limit: String(state.musicHistoryLimit),
+    offset: String(offset),
+  });
+  if (requesterId) query.set("requester_id", requesterId);
+  try {
+    const data = await api(
+      `/api/music/${encodeURIComponent(guildId)}/history?${query}`,
+    );
+    if (
+      requestId !== state.musicHistoryRequest ||
+      guildId !== $("#music-guild").value ||
+      requesterId !== $("#music-history-requester").value ||
+      offset !== state.musicHistoryOffset
+    )
+      return;
+    const total = Math.max(0, Number(data.total) || 0);
+    const limit = Math.max(1, Number(data.limit) || state.musicHistoryLimit);
+    const lastOffset = total ? Math.floor((total - 1) / limit) * limit : 0;
+    if (offset > lastOffset) {
+      state.musicHistoryOffset = lastOffset;
+      await loadMusicHistory();
+      return;
+    }
+    renderMusicHistory(data, guildId, requesterId, offset);
+  } catch (error) {
+    if (
+      requestId !== state.musicHistoryRequest ||
+      guildId !== $("#music-guild").value ||
+      requesterId !== $("#music-history-requester").value ||
+      offset !== state.musicHistoryOffset
+    )
+      return;
+    $("#music-history-total").textContent = "—";
+    $("#music-history-page").textContent = "無法載入";
+    $("#music-history-prev").disabled = true;
+    $("#music-history-next").disabled = true;
+    replace("#music-history-list", el("div", "empty", error.message));
+  } finally {
+    if (requestId === state.musicHistoryRequest) refresh.disabled = false;
+  }
+}
 async function controlMusic(action, mode) {
   if (state.busy || !state.music?.session_id) return;
   const data = state.music;
@@ -659,7 +799,14 @@ async function switchView(view) {
   });
   try {
     if (view === "overview") await loadOverview();
-    if (view === "music") await loadMusic();
+    if (view === "music") {
+      const [musicResult] = await Promise.allSettled([
+        loadMusic(),
+        loadMusicHistory(),
+      ]);
+      if (musicResult.status === "rejected")
+        notice(musicResult.reason.message, true);
+    }
     if (view === "ping") await loadPing();
     if (view === "settings" && !state.dirty) await loadSettings();
   } catch (error) {
@@ -678,7 +825,25 @@ $("#ping-filter").addEventListener("submit", async (event) => {
 });
 $("#music-guild").addEventListener("change", () => {
   renderMusic(null);
+  resetMusicHistory($("#music-guild").value);
   loadMusic().catch((error) => notice(error.message, true));
+  loadMusicHistory();
+});
+$("#music-history-requester").addEventListener("change", () => {
+  state.musicHistoryOffset = 0;
+  loadMusicHistory();
+});
+$("#music-history-refresh").addEventListener("click", () => loadMusicHistory());
+$("#music-history-prev").addEventListener("click", () => {
+  state.musicHistoryOffset = Math.max(
+    0,
+    state.musicHistoryOffset - state.musicHistoryLimit,
+  );
+  loadMusicHistory();
+});
+$("#music-history-next").addEventListener("click", () => {
+  state.musicHistoryOffset += state.musicHistoryLimit;
+  loadMusicHistory();
 });
 $("#pause-music").addEventListener("click", () =>
   controlMusic(state.music?.status === "paused" ? "resume" : "pause"),

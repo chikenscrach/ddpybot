@@ -82,9 +82,11 @@ def track(number):
     return Track(str(number), f'Song {number}', f'https://www.youtube.com/watch?v={number}', 10)
 
 
-def make_service(tmp_path, monkeypatch):
+def make_service(tmp_path, monkeypatch, history=None):
     config = MusicConfig.from_settings({}, tmp_path)
-    service = music.MusicService(SimpleNamespace(user=SimpleNamespace(id=999)), config, AsyncMock())
+    service = music.MusicService(
+        SimpleNamespace(user=SimpleNamespace(id=999)), config, AsyncMock(), history=history,
+    )
     service.cache = SimpleNamespace(
         resolve=AsyncMock(), acquire=AsyncMock(return_value=Path('audio.webm')),
         release=AsyncMock(), close=AsyncMock(), cleanup=AsyncMock(),
@@ -358,6 +360,88 @@ def test_stop_cancels_inflight_prefetch(tmp_path, monkeypatch):
         assert voice.played[0].source.cleaned
         service.cache.release.assert_awaited_once_with(first)
         await service.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', [music.LoopMode.TRACK, music.LoopMode.QUEUE])
+def test_history_records_each_play_start_but_not_pause_or_resume(tmp_path, monkeypatch, mode):
+    async def scenario():
+        history = Mock()
+        service, member, voice = make_service(tmp_path, monkeypatch, history)
+        song = track(1)
+        service.cache.resolve.return_value = [song]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        history.record.assert_called_once_with(1, song)
+
+        await service.toggle_pause(1)
+        await service.toggle_pause(1)
+        history.record.assert_called_once_with(1, song)
+
+        await service.set_loop_mode(1, mode)
+        voice.finish()
+        await spin_until(lambda: len(voice.played) == 2 and voice.is_playing())
+        assert history.record.call_count == 2
+        assert all(call.args == (1, song) for call in history.record.call_args_list)
+
+        await service.close()
+        await service.close()
+        history.close.assert_called_once_with()
+        assert not voice.connected
+    asyncio.run(scenario())
+
+
+def test_history_does_not_record_a_queued_song_when_stopped(tmp_path, monkeypatch):
+    async def scenario():
+        history = Mock()
+        service, member, voice = make_service(tmp_path, monkeypatch, history)
+        first, queued = track(1), track(2)
+        service.cache.resolve.return_value = [first, queued]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        await service.stop(1)
+        history.record.assert_called_once_with(1, first)
+        await service.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('failure', ['download', 'voice_play'])
+def test_history_skips_tracks_that_never_start(tmp_path, monkeypatch, failure):
+    async def scenario():
+        history = Mock()
+        service, member, voice = make_service(tmp_path, monkeypatch, history)
+        service.cache.resolve.return_value = [track(1)]
+        if failure == 'download':
+            service.cache.acquire.side_effect = MusicError('download failed')
+        else:
+            voice.play = Mock(side_effect=RuntimeError('voice play failed'))
+
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda:
+            any(call.args[1] == 'error' for call in service.on_update.await_args_list)
+            and service.get_state(1).status == 'idle'
+        )
+        history.record.assert_not_called()
+        await service.close()
+    asyncio.run(scenario())
+
+
+def test_history_record_failure_does_not_interrupt_audio_or_close_order(tmp_path, monkeypatch):
+    async def scenario():
+        history = Mock()
+        history.record.side_effect = OSError('database unavailable')
+        service, member, voice = make_service(tmp_path, monkeypatch, history)
+        song = track(1)
+        service.cache.resolve.return_value = [song]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        history.record.assert_called_once_with(1, song)
+
+        voice.finish()
+        await spin_until(lambda: service.get_state(1).status == 'idle')
+        assert voice.played[0].source.cleaned
+        await service.close()
+        history.close.assert_called_once_with()
     asyncio.run(scenario())
 
 

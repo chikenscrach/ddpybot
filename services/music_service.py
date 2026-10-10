@@ -117,10 +117,13 @@ class GuildPlayer:
 
 
 class MusicService:
-    def __init__(self, bot, config: MusicConfig, on_update: UpdateCallback):
+    def __init__(
+        self, bot, config: MusicConfig, on_update: UpdateCallback, *, history=None,
+    ):
         self.bot = bot
         self.config = config
         self.on_update = on_update
+        self.history = history
         self.cache = MusicCache(config)
         self.players: dict[int, GuildPlayer] = {}
         self._locks: dict[int, asyncio.Lock] = {}
@@ -129,6 +132,7 @@ class MusicService:
         self._cleanup_task: asyncio.Task | None = None
         self._requests: set[asyncio.Task] = set()
         self._closed = False
+        self._history_closed = False
         self.generation = secrets.token_hex(12)
 
     def get_state(self, guild_id: int) -> GuildPlayer | None:
@@ -356,6 +360,11 @@ class MusicService:
             started = True
             state.progress_started = time.monotonic()
             state.status = 'playing'
+            if self.history is not None:
+                try:
+                    self.history.record(state.guild_id, state.current)
+                except Exception:
+                    log.exception('無法記錄伺服器 %s 的音樂播放紀錄', state.guild_id)
             if state.queue and state.loop_mode != LoopMode.TRACK:
                 state.prefetch = _PreparedTrack(self.cache, state.queue[0])
             await self._notify(state, 'playing')
@@ -566,3 +575,6 @@ class MusicService:
             except Exception:
                 log.exception('關閉伺服器 %s 的語音連線失敗', guild_id)
         await self.cache.close()
+        if self.history is not None and not self._history_closed:
+            self.history.close()
+            self._history_closed = True

@@ -14,6 +14,7 @@ from discord.ext import commands
 from core.classes import CogExtension
 from core.config import PROJECT_ROOT, settings
 from services.music_cache import MusicConfig, MusicError, has_playlist, single_video_url
+from services.music_history import MusicHistoryDatabase
 from services.music_service import (
     LoopMode,
     MusicService,
@@ -28,6 +29,7 @@ from views.music import (
     build_now_playing_embed,
     build_queue_embeds,
 )
+from views.music_history import MusicHistoryView
 from views.pagination import PaginationView
 
 log = logging.getLogger(__name__)
@@ -114,7 +116,8 @@ class Music(CogExtension):
     def __init__(self, bot: commands.Bot):
         super().__init__(bot)
         config = MusicConfig.from_settings(settings, PROJECT_ROOT)
-        self.service = MusicService(bot, config, self._on_service_update)
+        self.history = MusicHistoryDatabase()
+        self.service = MusicService(bot, config, self._on_service_update, history=self.history)
         # One active panel per guild.  A lock is essential because a download
         # notification and a runner notification can arrive back-to-back.
         self._panels: dict[int, MusicControlView] = {}
@@ -354,6 +357,55 @@ class Music(CogExtension):
     @app_commands.guild_only()
     async def playnext(self, interaction: discord.Interaction, url: str):
         await self._run_enqueue_command(interaction, url, next_up=True)
+
+    @app_commands.command(name="history", description="查看自己或其他成員的音樂播放紀錄")
+    @app_commands.describe(user="要查詢的點歌者；留空時查詢自己")
+    @app_commands.guild_only()
+    async def history_command(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member | None = None,
+    ):
+        guild_id = _id(getattr(interaction, "guild", None))
+        if guild_id is None:
+            await _send_ephemeral(interaction, "❌ 音樂紀錄只能在伺服器中查詢。")
+            return
+
+        requester_id = _id(user or getattr(interaction, "user", None))
+        if requester_id is None:
+            await _send_ephemeral(interaction, "❌ 無法確認要查詢的成員。")
+            return
+        await _defer_ephemeral(interaction)
+        try:
+            result = self.history.query(
+                guild_id,
+                requester_id=requester_id,
+                limit=10,
+                offset=0,
+            )
+            items = result["items"]
+            if not items:
+                subject = f"<@{requester_id}>" if requester_id is not None else "這位成員"
+                await _send_ephemeral(interaction, f"{subject}目前沒有音樂播放紀錄。")
+                return
+
+            view = MusicHistoryView(
+                self,
+                guild_id=guild_id,
+                requester_id=requester_id,
+                owner_id=_id(getattr(interaction, "user", None)),
+                items=items,
+                total=result["total"],
+            )
+            message = await interaction.followup.send(
+                embed=view.embed,
+                view=view,
+                ephemeral=True,
+            )
+            view.message = message
+        except Exception:
+            log.exception("failed to load music history")
+            await _send_ephemeral(interaction, "❌ 無法讀取音樂播放紀錄，請稍後再試。")
 
     @app_commands.command(name="loop", description="設定播放清單循環、單曲循環或關閉循環")
     @app_commands.describe(mode="要使用的循環播放模式")

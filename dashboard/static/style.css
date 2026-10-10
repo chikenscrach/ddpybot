@@ -801,6 +801,86 @@ tbody tr:last-child td {
     monospace;
   color: var(--muted);
 }
+.music-history-panel {
+  margin-top: 24px;
+}
+.music-history-summary,
+.music-history-toolbar,
+.music-history-pagination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.music-history-summary .button,
+.music-history-pagination .button {
+  padding: 9px 13px;
+  font-size: 12px;
+}
+.music-history-toolbar {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: 15px 0 7px;
+}
+.music-history-toolbar label {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+}
+.music-history-toolbar select {
+  min-width: 180px;
+  max-width: min(340px, 65vw);
+}
+.music-history-list {
+  min-width: 0;
+}
+.music-history-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  padding: 15px 0;
+  border-bottom: 1px solid #e9eade;
+}
+.music-history-row:last-child {
+  border-bottom: 0;
+}
+.music-history-details {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.music-history-title {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+a.music-history-title {
+  text-decoration: underline;
+  text-decoration-color: #c7c9bd;
+  text-underline-offset: 3px;
+}
+a.music-history-title:hover {
+  color: var(--green);
+  text-decoration-color: currentColor;
+}
+.music-history-requester,
+.music-history-time {
+  color: var(--muted);
+  font-size: 11px;
+}
+.music-history-time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.music-history-pagination {
+  justify-content: flex-end;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  margin-top: 4px;
+}
 .settings-section {
   margin-bottom: 22px;
 }
@@ -1068,6 +1148,32 @@ dialog p {
   .inline-label select {
     flex: 1;
     max-width: 75%;
+  }
+  .music-history-summary {
+    gap: 8px;
+  }
+  .music-history-toolbar label {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .music-history-toolbar select {
+    flex: 1;
+    min-width: 0;
+    max-width: 75%;
+  }
+  .music-history-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 7px;
+  }
+  .music-history-time {
+    text-align: left;
+  }
+  .music-history-pagination {
+    justify-content: stretch;
+  }
+  .music-history-pagination .button {
+    flex: 1;
   }
   .page-footer {
     font-size: 8px;
