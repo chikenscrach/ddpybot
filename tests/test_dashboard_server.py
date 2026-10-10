@@ -1,8 +1,11 @@
 import asyncio
+import csv
+import io
 from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -329,6 +332,56 @@ def test_ping_filters_and_csv_use_temporary_database(tmp_path):
         assert csv_text.startswith("\ufeffuser_id,guild_id,channel_id,message_id,event_at,source")
         assert "1,111,5,101,1704124800,manual" in csv_text
         assert "102" not in csv_text
+
+    try:
+        run_http(server, check)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize("guild_filter", ["", "&guild_id=", "&guild_id=111"])
+@pytest.mark.parametrize("source_filter", ["", "&source=scheduled"])
+def test_ping_scheduled_rankings_and_export_with_guild_filters(
+    tmp_path, guild_filter, source_filter
+):
+    db = PingDatabase(tmp_path / "ping_count.db")
+    db.add_ping(1, guild_id=111, message_id=100, event_at=1_704_124_799)
+    db.add_ping(2, guild_id=999, message_id=101, event_at=1_704_124_800)
+    db.add_ping(3, guild_id=111, message_id=102, source="manual", event_at=1_704_124_800)
+    db.add_ping(4, guild_id=111, message_id=103, event_at=1_704_211_200)
+    server, _, _, _ = make_server(tmp_path, db=db)
+
+    async def check(client):
+        query = f"start=2024-01-01&end=2024-01-02{guild_filter}{source_filter}"
+        response = await client.get(f"/api/ping?{query}", headers=owner_headers())
+        assert response.status == 200
+        data = await response.json()
+        expected_users = {"1"} if guild_filter == "&guild_id=111" else {"1", "2"}
+        assert data["period_total"] == len(expected_users)
+        assert data["unique_users"] == len(expected_users)
+        assert {row["user_id"] for row in data["leaders"]} == expected_users
+        assert all(row["count"] == 1 for row in data["leaders"])
+        assert {row["name"] for row in data["leaders"]} == {
+            f"member-{user_id}" for user_id in expected_users
+        }
+        assert {row["user_id"] for row in data["events"]} == expected_users
+        assert all(row["source"] == "scheduled" for row in data["events"])
+
+        exported = await client.get(f"/api/ping/export?{query}", headers=owner_headers())
+        assert exported.status == 200
+        rows = list(csv.DictReader(io.StringIO((await exported.text()).lstrip("\ufeff"))))
+        assert {row["user_id"] for row in rows} == expected_users
+        assert all(row["source"] == "scheduled" for row in rows)
+
+        empty = await client.get(
+            f"/api/ping?start=2024-01-04&end=2024-01-04{guild_filter}{source_filter}",
+            headers=owner_headers(),
+        )
+        assert empty.status == 200
+        empty_data = await empty.json()
+        assert empty_data["period_total"] == 0
+        assert empty_data["leaders"] == []
+        assert empty_data["events"] == []
 
     try:
         run_http(server, check)

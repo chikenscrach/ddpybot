@@ -134,7 +134,7 @@
         </section>
         <section id="view-ping" class="view" aria-label="Ping 分析" hidden>
           <div class="intro-line">
-            <p>每日隨機標人的紀錄與分布。日期以台北時間計算。</p>
+            <p>每日排程隨機標人的紀錄與分布。日期以台北時間計算。</p>
             <a id="export-ping" class="button secondary" href="/api/ping/export"
               >匯出 CSV ↗</a
             >
@@ -143,12 +143,6 @@
             <label>開始日期<input id="ping-start" type="date" required /></label
             ><label>結束日期<input id="ping-end" type="date" required /></label
             ><label
-              >來源<select id="ping-source">
-                <option value="all">全部來源</option>
-                <option value="scheduled">每日排程</option>
-                <option value="manual">手動測試</option>
-              </select></label
-            ><label
               >伺服器<select id="ping-guild">
                 <option value="">全部伺服器</option>
               </select></label
@@ -156,25 +150,6 @@
           </form>
           <p id="history-note" class="history-note"></p>
           <div id="ping-metrics" class="metrics compact"></div>
-          <article class="panel chart-panel">
-            <div class="panel-heading">
-              <div>
-                <p class="eyebrow">DAILY ACTIVITY</p>
-                <h2>每日標記紀錄</h2>
-              </div>
-              <span class="legend"><i></i>標記次數</span>
-            </div>
-            <div
-              id="ping-chart"
-              class="chart"
-              role="img"
-              aria-label="每日標記次數長條圖"
-            ></div>
-            <details>
-              <summary>查看每日數據</summary>
-              <div id="daily-table" class="table-wrap"></div>
-            </details>
-          </article>
           <div class="analysis-grid">
             <article class="panel">
               <div class="panel-heading">

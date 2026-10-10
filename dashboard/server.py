@@ -183,10 +183,10 @@ class DashboardServer:
             raise web.HTTPBadRequest(reason='日期格式必須是 YYYY-MM-DD。') from None
         if start > end or (end - start).days >= 366:
             raise web.HTTPBadRequest(reason='日期區間必須介於 1 至 366 天。')
-        source = request.query.get('source', 'all')
+        source = request.query.get('source', 'scheduled')
         if source not in ('all', 'scheduled', 'manual'):
             raise web.HTTPBadRequest(reason='無效的紀錄來源。')
-        guild_id = request.query.get('guild_id')
+        guild_id = request.query.get('guild_id') or None
         if guild_id:
             guild_id = self._guild(guild_id).id
         return start, end, {'guild_id': guild_id, 'source': source}

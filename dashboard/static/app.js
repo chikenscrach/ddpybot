@@ -209,7 +209,7 @@ function pingQuery() {
   return new URLSearchParams({
     start: $("#ping-start").value,
     end: $("#ping-end").value,
-    source: $("#ping-source").value,
+    source: "scheduled",
     guild_id: $("#ping-guild").value,
   });
 }
@@ -243,71 +243,6 @@ function leaders(rows) {
     return line;
   });
 }
-function drawChart(rows, historyDate) {
-  const namespace = "http://www.w3.org/2000/svg";
-  const svg = document.createElementNS(namespace, "svg");
-  svg.setAttribute("viewBox", "0 0 900 230");
-  svg.setAttribute("preserveAspectRatio", "none");
-  const make = (tag, attributes, text) => {
-    const node = document.createElementNS(namespace, tag);
-    for (const [k, v] of Object.entries(attributes)) node.setAttribute(k, v);
-    if (text !== undefined) node.textContent = text;
-    return node;
-  };
-  const max = Math.max(1, ...rows.map((r) => r.count));
-  for (let i = 0; i <= 4; i++) {
-    const y = 190 - i * 42;
-    svg.append(
-      make("line", { x1: 32, x2: 891, y1: y, y2: y, class: "chart-grid" }),
-    );
-    svg.append(
-      make(
-        "text",
-        { x: 0, y: y + 4 },
-        ((max * i) / 4).toFixed(max > 3 ? 0 : 1),
-      ),
-    );
-  }
-  const width = 850 / Math.max(1, rows.length);
-  rows.forEach((row, i) => {
-    const known = !historyDate || row.date >= historyDate;
-    const height = (row.count / max) * 168;
-    const bar = make("rect", {
-      x: 35 + i * width,
-      y: known ? 190 - Math.max(2, height) : 190,
-      width: Math.max(1, width * 0.68),
-      height: known ? Math.max(2, height) : 0,
-      rx: Math.min(3, width / 4),
-      class: "chart-bar",
-    });
-    bar.append(
-      make(
-        "title",
-        {},
-        `${row.date}：${known ? `${row.count} 次（排程 ${row.scheduled} / 手動 ${row.manual}）` : "尚未開始記錄"}`,
-      ),
-    );
-    svg.append(bar);
-    if (
-      i === 0 ||
-      i === rows.length - 1 ||
-      (i % Math.max(1, Math.ceil(rows.length / 6)) === 0 &&
-        i < rows.length - Math.ceil(rows.length / 12))
-    )
-      svg.append(
-        make(
-          "text",
-          {
-            x: 35 + i * width,
-            y: 215,
-            "text-anchor": i === rows.length - 1 ? "end" : "start",
-          },
-          row.date.slice(5),
-        ),
-      );
-  });
-  replace("#ping-chart", svg);
-}
 async function loadPing() {
   const query = pingQuery();
   const data = await api(`/api/ping?${query}`);
@@ -331,29 +266,15 @@ async function loadPing() {
     ),
     metric("舊資料累計", number(data.legacy_total), "次", "沒有逐次明細的紀錄"),
   );
-  drawChart(data.daily, data.history_start_date);
-  replace(
-    "#daily-table",
-    table(
-      ["日期", "排程", "手動", "合計"],
-      data.daily.map((r) => [
-        r.date,
-        r.date < data.history_start_date ? "無資料" : r.scheduled,
-        r.date < data.history_start_date ? "無資料" : r.manual,
-        r.date < data.history_start_date ? "無資料" : r.count,
-      ]),
-    ),
-  );
   replace("#period-leaders", ...leaders(data.leaders));
   replace("#lifetime-leaders", ...leaders(data.lifetime_leaders));
   replace(
     "#ping-events",
     table(
-      ["時間（台北）", "成員", "來源", "伺服器 ID"],
+      ["時間（台北）", "成員", "伺服器 ID"],
       data.events.map((r) => [
         dateTime(r.event_at),
         r.name,
-        r.source === "manual" ? "手動測試" : "每日排程",
         r.guild_id || "未知",
       ]),
     ),

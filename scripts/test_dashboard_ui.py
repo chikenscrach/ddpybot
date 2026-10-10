@@ -15,13 +15,12 @@ import argparse
 import copy
 import json
 import sys
-import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from playwright.sync_api import Browser, Page, Response, Route, sync_playwright
+from playwright.sync_api import Browser, Page, Response, Route, expect, sync_playwright
 
 DEFAULT_URL = "http://127.0.0.1:8088"
 DEFAULT_SCREENSHOTS = Path("/tmp/ddpybot-dashboard-ui")
@@ -32,6 +31,17 @@ LARGE_DAILY_ID = "18446744073709551615"
 LARGE_MODERATOR_IDS = ["18446744073709551614", "9223372036854775807"]
 XSS_PAYLOAD = '<img src=x onerror="window.__dashboardSmokeXss = true">'
 CSRF_TOKEN = "dashboard-ui-fixture-csrf"
+OTHER_GUILD_ID = "18446744073709551612"
+PING_EVENTS = (
+    {"day": "2026-10-01", "user_id": "123456789012345678", "name": XSS_PAYLOAD,
+     "guild_id": GUILD_ID, "source": "scheduled"},
+    {"day": "2026-10-02", "user_id": "123456789012345678", "name": XSS_PAYLOAD,
+     "guild_id": GUILD_ID, "source": "scheduled"},
+    {"day": "2026-10-03", "user_id": "123456789012345680", "name": "Other Guild User",
+     "guild_id": OTHER_GUILD_ID, "source": "scheduled"},
+    {"day": "2026-10-02", "user_id": "123456789012345681", "name": "Manual Only User",
+     "guild_id": GUILD_ID, "source": "manual"},
+)
 
 MUSIC_VALUES: dict[str, Any] = {
     "cache_dir": "data/music",
@@ -85,6 +95,7 @@ def _new_state() -> dict[str, Any]:
         "settings_puts": [],
         "control_actions": [],
         "mutation_csrf": [],
+        "ping_queries": [],
         "logout_count": 0,
         "music": _new_music_state(),
     }
@@ -140,43 +151,49 @@ def _overview_fixture() -> dict[str, Any]:
 
 
 def _ping_fixture(url: str) -> dict[str, Any]:
-    query = parse_qs(urlsplit(url).query)
+    query = parse_qs(urlsplit(url).query, keep_blank_values=True)
     start = date.fromisoformat(query["start"][0])
     end = date.fromisoformat(query["end"][0])
-    history_start = max(start, end - timedelta(days=5))
-    day_count = (end - start).days
-    daily = []
-    for offset in range(day_count + 1):
-        current = start + timedelta(days=offset)
-        known = current >= history_start
-        daily.append({
-            "date": current.isoformat(),
-            "scheduled": 1 if known and offset % 2 == 0 else 0,
-            "manual": 1 if known and offset % 3 == 0 else 0,
-            "count": (1 if known and offset % 2 == 0 else 0)
-            + (1 if known and offset % 3 == 0 else 0),
+    guild_id = query.get("guild_id", [""])[0]
+    source = query.get("source", [""])[0]
+    events = [
+        event for event in PING_EVENTS
+        if start.isoformat() <= event["day"] <= end.isoformat()
+        and (not guild_id or event["guild_id"] == guild_id)
+        and (source in {"", "all"} or event["source"] == source)
+    ]
+    events.sort(key=lambda event: (event["day"], event["user_id"]), reverse=True)
+    grouped: dict[str, dict[str, Any]] = {}
+    for event in events:
+        leader = grouped.setdefault(event["user_id"], {
+            "user_id": event["user_id"], "name": event["name"], "count": 0,
         })
-    started = datetime.combine(history_start, datetime.min.time(), tzinfo=timezone.utc)
+        leader["count"] += 1
+    started = datetime.combine(start, datetime.min.time(), tzinfo=timezone.utc)
+    response_events = [
+        {
+            "user_id": event["user_id"],
+            "name": event["name"],
+            "guild_id": event["guild_id"],
+            "channel_id": "123456789012345679",
+            "event_at": int(datetime.fromisoformat(event["day"]).replace(tzinfo=timezone.utc).timestamp()),
+            "source": event["source"],
+        }
+        for event in events
+    ]
     return {
         "start": start.isoformat(),
         "end": end.isoformat(),
-        "period_total": 4,
-        "unique_users": 2,
+        "period_total": len(events),
+        "unique_users": len(grouped),
         "lifetime_total": 57,
         "legacy_total": 11,
         "history_started_at": int(started.timestamp()),
-        "history_start_date": history_start.isoformat(),
-        "daily": daily,
-        "leaders": [{"user_id": "123456789012345678", "name": XSS_PAYLOAD, "count": 3}],
+        "history_start_date": start.isoformat(),
+        "daily": [],
+        "leaders": sorted(grouped.values(), key=lambda leader: (-leader["count"], leader["user_id"])),
         "lifetime_leaders": [{"user_id": "123456789012345678", "name": XSS_PAYLOAD, "count": 57}],
-        "events": [{
-            "user_id": "123456789012345678",
-            "name": XSS_PAYLOAD,
-            "guild_id": GUILD_ID,
-            "channel_id": "123456789012345679",
-            "event_at": int(time.time()),
-            "source": "scheduled",
-        }],
+        "events": response_events,
     }
 
 
@@ -216,6 +233,7 @@ def _api_route(route: Route, state: dict[str, Any]) -> None:
     if path == "/api/overview" and method == "GET":
         _json_response(route, _overview_fixture())
     elif path == "/api/ping" and method == "GET":
+        state["ping_queries"].append(parse_qs(urlsplit(request.url).query, keep_blank_values=True))
         _json_response(route, _ping_fixture(request.url))
     elif path == "/api/settings" and method == "GET":
         _json_response(route, state["settings"])
@@ -314,6 +332,41 @@ def _expect_control_and_refresh(page: Page, trigger) -> None:
     assert refresh_response.status == 200
 
 
+def _apply_ping_filter(page: Page, state: dict[str, Any], start: str, end: str,
+                       *, expected_total: int, guild_id: str = "") -> None:
+    page.locator("#ping-start").fill(start)
+    page.locator("#ping-end").fill(end)
+    page.locator("#ping-guild").select_option(guild_id)
+    with page.expect_response(
+        lambda response: response.request.method == "GET"
+        and urlsplit(response.url).path == "/api/ping"
+    ) as ping_response:
+        page.get_by_role("button", name="套用篩選").click()
+    response = ping_response.value
+    assert response.status == 200
+
+    expected = {
+        "start": [start],
+        "end": [end],
+        "source": ["scheduled"],
+        "guild_id": [guild_id],
+    }
+    expect(page.locator("#export-ping")).to_have_attribute(
+        "href", f"/api/ping/export?{urlsplit(response.url).query}"
+    )
+    metric = page.locator("#ping-metrics .metric").filter(has_text="區間標記")
+    expect(metric.locator(".metric-value")).to_have_text(f"{expected_total}次")
+    expect(metric.locator(".metric-detail")).to_have_text(f"{start} — {end}")
+    actual = parse_qs(urlsplit(response.url).query, keep_blank_values=True)
+    assert actual == expected
+    assert state["ping_queries"][-1] == expected
+    export_query = parse_qs(
+        urlsplit(page.locator("#export-ping").get_attribute("href") or "").query,
+        keep_blank_values=True,
+    )
+    assert export_query == expected
+
+
 def _exercise_dashboard(page: Page, state: dict[str, Any], screenshots: Path, viewport_name: str) -> None:
     titles = {
         "overview": "總覽",
@@ -344,14 +397,63 @@ def _exercise_dashboard(page: Page, state: dict[str, Any], screenshots: Path, vi
         _screenshot(page, screenshots, f"{viewport_name}-{view}")
 
         if view == "ping":
-            page.wait_for_function(
-                "() => document.querySelector('#history-note')?.textContent.includes('更早日期沒有')"
-            )
-            page.locator("#ping-chart svg").wait_for(state="visible")
-            assert "更早日期沒有可分析的明細" in page.locator("#history-note").inner_text()
-            assert page.locator("#ping-chart title").filter(has_text="尚未開始記錄").count() > 0
+            assert page.locator("#ping-source, #ping-chart, #daily-table").count() == 0
+            assert page.locator("#view-ping .chart-panel, #view-ping svg").count() == 0
+            assert page.get_by_text("每日標記紀錄", exact=True).count() == 0
+            assert state["ping_queries"]
+            initial_query = state["ping_queries"][-1]
+            assert initial_query.get("source") == ["scheduled"]
+            assert initial_query.get("guild_id") == [""]
+            assert initial_query.get("start", [""])[0]
+            assert initial_query.get("end", [""])[0]
+            assert parse_qs(
+                urlsplit(page.locator("#export-ping").get_attribute("href") or "").query,
+                keep_blank_values=True,
+            ) == initial_query
+
+            _apply_ping_filter(page, state, "2026-10-01", "2026-10-03", expected_total=3)
+            period_metric = page.locator("#ping-metrics .metric").filter(has_text="區間標記")
+            assert "3次" in period_metric.inner_text().replace("\n", "")
+            assert "2026-10-01 — 2026-10-03" in period_metric.inner_text()
+            assert XSS_PAYLOAD in page.locator("#period-leaders").inner_text()
+            assert "2次" in page.locator("#period-leaders").inner_text()
+            assert "Other Guild User" in page.locator("#period-leaders").inner_text()
+            assert "Manual Only User" not in page.locator("#period-leaders").inner_text()
             assert XSS_PAYLOAD in page.locator("#ping-events").inner_text()
+            assert "Other Guild User" in page.locator("#ping-events").inner_text()
+            assert "Manual Only User" not in page.locator("#ping-events").inner_text()
             assert page.locator("#ping-events img[onerror]").count() == 0
+            assert page.locator("#period-leaders img[onerror]").count() == 0
+            assert page.evaluate("window.__dashboardSmokeXss") is False
+            _screenshot(page, screenshots, f"{viewport_name}-ping-with-records")
+
+            _apply_ping_filter(
+                page, state, "2026-10-01", "2026-10-03", expected_total=2, guild_id=GUILD_ID
+            )
+            period_metric = page.locator("#ping-metrics .metric").filter(has_text="區間標記")
+            assert "2次" in period_metric.inner_text().replace("\n", "")
+            assert XSS_PAYLOAD in page.locator("#period-leaders").inner_text()
+            assert "Other Guild User" not in page.locator("#period-leaders").inner_text()
+            assert XSS_PAYLOAD in page.locator("#ping-events").inner_text()
+            assert "Other Guild User" not in page.locator("#ping-events").inner_text()
+            assert "Manual Only User" not in page.locator("#ping-events").inner_text()
+
+            _apply_ping_filter(page, state, "2026-10-03", "2026-10-03", expected_total=1)
+            period_metric = page.locator("#ping-metrics .metric").filter(has_text="區間標記")
+            assert "1次" in period_metric.inner_text().replace("\n", "")
+            assert "Other Guild User" in page.locator("#period-leaders").inner_text()
+            assert "Other Guild User" in page.locator("#ping-events").inner_text()
+            assert XSS_PAYLOAD not in page.locator("#period-leaders").inner_text()
+            assert XSS_PAYLOAD not in page.locator("#ping-events").inner_text()
+            assert page.locator("#ping-events table tbody tr").count() == 1
+
+            _apply_ping_filter(page, state, "2026-10-04", "2026-10-05", expected_total=0)
+            period_metric = page.locator("#ping-metrics .metric").filter(has_text="區間標記")
+            assert "0次" in period_metric.inner_text().replace("\n", "")
+            assert "尚無標記紀錄" in page.locator("#period-leaders").inner_text()
+            assert "Other Guild User" not in page.locator("#period-leaders").inner_text()
+            assert page.locator("#ping-events table tbody tr").count() == 0
+            assert "Other Guild User" not in page.locator("#ping-events").inner_text()
         elif view == "music":
             page.wait_for_function(
                 "(payload) => document.querySelector('#song-title')?.textContent === payload",
