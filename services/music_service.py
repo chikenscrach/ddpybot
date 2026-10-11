@@ -405,6 +405,42 @@ class MusicService:
             await self._pause_locked(state, not state.voice.is_paused())
             return state.status == 'paused'
 
+    async def move_track(self, guild_id: int, source: int, destination: int) -> Track:
+        async with self._lock(guild_id):
+            state = self._require_state(guild_id)
+            if not state.queue:
+                raise MusicError('目前沒有待播歌曲。')
+            if (
+                type(source) is not int or type(destination) is not int
+                or not 1 <= source <= len(state.queue)
+                or not 1 <= destination <= len(state.queue)
+            ):
+                raise MusicError(f'歌曲編號須介於 1 到 {len(state.queue)}。')
+
+            tracks = list(state.queue)
+            selected = tracks[source - 1]
+            if source == destination:
+                return selected
+
+            previous_head = state.queue[0]
+            tracks.insert(destination - 1, tracks.pop(source - 1))
+            state.queue.clear()
+            state.queue.extend(tracks)
+
+            if state.queue[0] is not previous_head:
+                if state.prefetch and state.prefetch.track is not state.queue[0]:
+                    await self._discard_prefetch(state)
+                if (
+                    state.prefetch is None
+                    and state.status in ('playing', 'paused')
+                    and state.loop_mode != LoopMode.TRACK
+                    and state.queue
+                ):
+                    state.prefetch = _PreparedTrack(self.cache, state.queue[0])
+
+            await self._notify(state, 'queue')
+            return selected
+
     async def _pause_locked(self, state: GuildPlayer, paused: bool):
         if not (state.voice.is_paused() or state.voice.is_playing()):
             raise MusicError('目前沒有正在播放的歌曲。')

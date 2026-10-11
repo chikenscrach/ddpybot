@@ -102,6 +102,168 @@ def make_service(tmp_path, monkeypatch, history=None):
     return service, member, voice
 
 
+@pytest.mark.parametrize(('source', 'destination', 'expected'), [
+    (9, 2, [1, 9, 2, 3, 4, 5, 6, 7, 8, 10]),
+    (2, 9, [1, 3, 4, 5, 6, 7, 8, 9, 2, 10]),
+    (1, 10, [2, 3, 4, 5, 6, 7, 8, 9, 10, 1]),
+    (10, 1, [10, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+    (6, 7, [1, 2, 3, 4, 5, 7, 6, 8, 9, 10]),
+])
+def test_move_track_inserts_by_queue_button_number(tmp_path, monkeypatch, source, destination, expected):
+    async def scenario():
+        service, _, voice = make_service(tmp_path, monkeypatch)
+        tracks = [track(number) for number in range(1, 11)]
+        state = music.GuildPlayer(1, voice, 20, 1, queue=deque(tracks))
+        service.players[1] = state
+        queue = state.queue
+
+        moved = await service.move_track(1, source, destination)
+
+        assert moved is tracks[source - 1]
+        assert state.queue is queue
+        assert list(state.queue) == [tracks[number - 1] for number in expected]
+        service.on_update.assert_awaited_once_with(1, 'queue', None)
+        await service.close()
+    asyncio.run(scenario())
+
+
+def test_move_track_same_position_is_a_noop(tmp_path, monkeypatch):
+    async def scenario():
+        service, _, voice = make_service(tmp_path, monkeypatch)
+        first, second = track(1), track(2)
+        state = music.GuildPlayer(1, voice, 20, 1, queue=deque([first, second]))
+        service.players[1] = state
+        queue = state.queue
+
+        assert await service.move_track(1, 2, 2) is second
+        assert state.queue is queue
+        assert list(state.queue) == [first, second]
+        service.on_update.assert_not_awaited()
+        await service.close()
+    asyncio.run(scenario())
+
+
+def test_move_track_rejects_empty_disconnected_and_out_of_range(tmp_path, monkeypatch):
+    async def scenario():
+        service, _, voice = make_service(tmp_path, monkeypatch)
+        state = music.GuildPlayer(1, voice, 20, 1)
+        service.players[1] = state
+        with pytest.raises(MusicError, match='沒有待播歌曲'):
+            await service.move_track(1, 1, 1)
+
+        state.queue.extend([track(1), track(2)])
+        queue = list(state.queue)
+        for source, destination in [(0, 1), (1, 0), (3, 1), (1, 3), (-1, 2)]:
+            with pytest.raises(MusicError, match='歌曲編號'):
+                await service.move_track(1, source, destination)
+            assert list(state.queue) == queue
+        service.on_update.assert_not_awaited()
+
+        voice.connected = False
+        with pytest.raises(MusicError, match='沒有加入語音頻道'):
+            await service.move_track(1, 1, 2)
+        await service.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('mode', list(music.LoopMode))
+@pytest.mark.parametrize('paused', [False, True])
+def test_move_track_preserves_playback_state_and_updates_prefetch(tmp_path, monkeypatch, mode, paused):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        first, second, third, fourth, fifth = [track(number) for number in range(1, 6)]
+        service.cache.resolve.return_value = [first, second, third, fourth, fifth]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        await service.set_loop_mode(1, mode)
+        if paused:
+            await service.toggle_pause(1)
+        queue, source = state.queue, voice.source
+        prefetch = state.prefetch
+
+        assert await service.move_track(1, 3, 2) is fourth
+        assert state.current is first
+        assert state.queue is queue
+        assert list(state.queue) == [second, fourth, third, fifth]
+        assert state.loop_mode == mode
+        assert voice.source is source
+        assert state.status == ('paused' if paused else 'playing')
+        assert voice.is_paused() is paused
+        assert state.prefetch is prefetch
+
+        if prefetch is not None:
+            await spin_until(lambda: prefetch.acquired)
+        assert await service.move_track(1, 3, 1) is third
+        assert list(state.queue) == [third, second, fourth, fifth]
+        assert state.current is first
+        assert voice.source is source
+        assert state.status == ('paused' if paused else 'playing')
+        assert state.loop_mode == mode
+        if mode == music.LoopMode.TRACK:
+            assert state.prefetch is None
+        else:
+            assert state.prefetch.track is third
+            assert not prefetch.acquired
+            service.cache.release.assert_awaited_once_with(second)
+
+        await service.close()
+    asyncio.run(scenario())
+
+
+def test_move_track_cancels_old_prefetch_and_keeps_runners_new_prefetch(tmp_path, monkeypatch):
+    async def scenario():
+        service, member, voice = make_service(tmp_path, monkeypatch)
+        first, second, third = track(1), track(2), track(3)
+        old_prefetch_started = asyncio.Event()
+        old_prefetch_cancelled = asyncio.Event()
+        finish_cancellation = asyncio.Event()
+        second_attempts = 0
+
+        async def acquire(item):
+            nonlocal second_attempts
+            if item is second:
+                second_attempts += 1
+                if second_attempts == 1:
+                    old_prefetch_started.set()
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        old_prefetch_cancelled.set()
+                        await finish_cancellation.wait()
+            return Path(f'{item.id}.webm')
+
+        service.cache.acquire.side_effect = acquire
+        service.cache.resolve.return_value = [first, second, third]
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        await old_prefetch_started.wait()
+        old_prefetch = state.prefetch
+
+        moving = asyncio.create_task(service.move_track(1, 2, 1))
+        await old_prefetch_cancelled.wait()
+        assert old_prefetch is not None and old_prefetch.track is second
+        assert list(state.queue) == [third, second]
+
+        voice.finish()
+        await spin_until(lambda: state.current is third and voice.is_playing())
+        runner_prefetch = state.prefetch
+        assert runner_prefetch is not None and runner_prefetch.track is second
+        finish_cancellation.set()
+        assert await moving is third
+        assert state.prefetch is runner_prefetch
+
+        voice.finish()
+        await spin_until(lambda: state.current is second and voice.is_playing())
+        assert second_attempts == 2
+        await service.close()
+        assert [entry.args[0] for entry in service.cache.release.await_args_list] == [
+            first, third, second,
+        ]
+    asyncio.run(scenario())
+
+
 def test_play_pause_skip_and_release(tmp_path, monkeypatch):
     async def scenario():
         service, member, voice = make_service(tmp_path, monkeypatch)

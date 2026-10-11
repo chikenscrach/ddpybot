@@ -91,6 +91,10 @@ def test_queue_pages_expose_all_tracks():
     text = "\n".join(page.description for page in pages)
     assert "queue-0" in text
     assert "queue-44" in text
+    assert "`01`　queue-0" in pages[0].description
+    assert "`21`　queue-20" in pages[1].description
+    assert "`45`　queue-44" in pages[2].description
+    assert all("/move source:歌曲編號 destination:新順位" in page.footer.text for page in pages)
 
 
 @pytest.mark.parametrize('mode', list(LoopMode))
@@ -209,6 +213,68 @@ def test_loop_command_reports_missing_songs_ephemerally():
     interaction = _interaction(_member())
     asyncio.run(Music.loop.callback(cog, interaction, 'track'))
     assert '請先點歌' in interaction.followup.send.call_args.args[0]
+    assert interaction.followup.send.call_args.kwargs['ephemeral'] is True
+
+
+@pytest.mark.parametrize('source,destination', [(9, 2), (6, 7), (25, 2), (1, 1)])
+def test_move_command_uses_queue_numbers_and_confirms_position(source, destination):
+    from cmds.music import Music
+
+    state = _state()
+    cog = Music.__new__(Music)
+    cog.service = SimpleNamespace(
+        get_state=lambda _guild_id: state,
+        move_track=AsyncMock(return_value=state.queue[source - 1]),
+    )
+    interaction = _interaction(_member())
+    asyncio.run(Music.move.callback(cog, interaction, source, destination))
+
+    cog.service.move_track.assert_awaited_once_with(99, source, destination)
+    interaction.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+    response = interaction.followup.send.call_args
+    assert f'queue-{source - 1}' in response.args[0]
+    assert f'第 {source} 位' in response.args[0]
+    assert f'第 {destination} 位' in response.args[0]
+    assert ('順位未變更' in response.args[0]) == (source == destination)
+    assert response.kwargs['ephemeral'] is True
+    assert response.kwargs['allowed_mentions'].to_dict() == discord.AllowedMentions.none().to_dict()
+    assert Music.move.guild_only
+    assert all(parameter.min_value == 1 for parameter in Music.move.parameters)
+
+
+@pytest.mark.parametrize('reason', ['wrong_channel', 'no_voice', 'no_guild'])
+def test_move_command_requires_same_voice_channel(reason):
+    from cmds.music import Music
+
+    cog = Music.__new__(Music)
+    cog.service = SimpleNamespace(get_state=lambda _guild_id: _state(), move_track=AsyncMock())
+    user = _member(channel_id=11 if reason == 'wrong_channel' else 10)
+    interaction = _interaction(user)
+    if reason == 'no_voice':
+        user.voice = None
+    elif reason == 'no_guild':
+        interaction.guild = None
+
+    asyncio.run(Music.move.callback(cog, interaction, 9, 2))
+
+    cog.service.move_track.assert_not_awaited()
+    assert interaction.followup.send.call_args.kwargs['ephemeral'] is True
+
+
+@pytest.mark.parametrize('message', ['目前沒有待播歌曲。', '歌曲編號必須介於 1 到 10。'])
+def test_move_command_reports_invalid_queue_positions(message):
+    from cmds.music import Music
+
+    cog = Music.__new__(Music)
+    cog.service = SimpleNamespace(
+        get_state=lambda _guild_id: _state(),
+        move_track=AsyncMock(side_effect=MusicError(message)),
+    )
+    interaction = _interaction(_member())
+
+    asyncio.run(Music.move.callback(cog, interaction, 11, 2))
+
+    assert message in interaction.followup.send.call_args.args[0]
     assert interaction.followup.send.call_args.kwargs['ephemeral'] is True
 
 

@@ -200,7 +200,10 @@ def build_queue_embed(state: Any, *, limit: int = 20) -> discord.Embed:
         description="\n".join(lines),
         color=discord.Color.blurple(),
     )
-    embed.set_footer(text=f"共 {len(queue)} 首待播歌曲 • {_loop_mode_label(state)}")
+    embed.set_footer(
+        text=f"共 {len(queue)} 首待播歌曲 • {_loop_mode_label(state)}\n"
+        "移動歌曲：/move source:歌曲編號 destination:新順位"
+    )
     return embed
 
 
@@ -233,7 +236,8 @@ def build_queue_embeds(state: Any, *, page_size: int = 20) -> list[discord.Embed
             color=discord.Color.blurple(),
         )
         embed.set_footer(
-            text=f"第 {page_index + 1} / {page_count} 頁 • 共 {len(queue)} 首待播歌曲 • {_loop_mode_label(state)}"
+            text=f"第 {page_index + 1} / {page_count} 頁 • 共 {len(queue)} 首待播歌曲 • {_loop_mode_label(state)}\n"
+            "移動歌曲：/move source:歌曲編號 destination:新順位"
         )
         pages.append(embed)
     return pages

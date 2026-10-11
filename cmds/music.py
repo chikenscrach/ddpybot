@@ -430,6 +430,39 @@ class Music(CogExtension):
                 log.exception("music loop command failed")
             await _send_ephemeral(interaction, _music_error_text(exc))
 
+    @app_commands.command(name="move", description="將待播歌曲移到指定順位，其餘歌曲依序挪移")
+    @app_commands.describe(
+        source="要移動的歌曲編號（以播放清單顯示的編號為準）",
+        destination="移動後的順位（從 1 開始，不含正在播放的歌曲）",
+    )
+    @app_commands.guild_only()
+    async def move(
+        self,
+        interaction: discord.Interaction,
+        source: app_commands.Range[int, 1],
+        destination: app_commands.Range[int, 1],
+    ):
+        await _defer_ephemeral(interaction)
+        allowed, _channel = await self._require_voice(interaction)
+        if not allowed:
+            return
+        try:
+            track = await self.service.move_track(_id(interaction.guild), source, destination)
+            title = discord.utils.escape_markdown(_clip(track.title, 180))
+            if source == destination:
+                message = f"✅ 〈{title}〉已在第 {source} 位，順位未變更。"
+            else:
+                message = f"✅ 已將〈{title}〉從第 {source} 位移到第 {destination} 位，其餘歌曲依序挪移。"
+            await _send_ephemeral(
+                interaction,
+                message + "\n可重新開啟「播放清單」或使用 `/queue` 查看最新順序。",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+        except Exception as exc:
+            if not isinstance(exc, MusicError):
+                log.exception("music move command failed")
+            await _send_ephemeral(interaction, _music_error_text(exc))
+
     @app_commands.command(name="leave", description="讓機器人離開語音頻道並清除播放佇列")
     @app_commands.guild_only()
     async def leave(self, interaction: discord.Interaction):
