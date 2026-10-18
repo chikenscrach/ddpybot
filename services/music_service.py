@@ -287,21 +287,24 @@ class MusicService:
             await prepared.close()
 
     async def _run(self, state: GuildPlayer):
+        record_history = True
         try:
             while True:
                 while state.queue and state.voice.is_connected():
                     state.current = state.queue.popleft()
                     try:
-                        await self._play(state)
+                        await self._play(state, record_history=record_history)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
+                        record_history = True
                         log.exception('伺服器 %s 播放歌曲失敗', state.guild_id)
                         detail = str(exc) if isinstance(exc, MusicError) else '下載或播放失敗，已跳過這首歌曲。'
                         await self._notify(state, 'error', detail)
                     else:
                         # Only naturally completed tracks rejoin the queue;
                         # a skip cancels this runner and failures stay removed.
+                        record_history = state.loop_mode != LoopMode.TRACK
                         if state.loop_mode == LoopMode.TRACK:
                             state.queue.appendleft(state.current)
                         elif state.loop_mode == LoopMode.QUEUE:
@@ -320,7 +323,7 @@ class MusicService:
         finally:
             await self._discard_prefetch(state)
 
-    async def _play(self, state: GuildPlayer):
+    async def _play(self, state: GuildPlayer, *, record_history: bool = True):
         prepared, state.prefetch = state.prefetch, None
         if prepared and prepared.track is not state.current:
             await prepared.close()
@@ -360,7 +363,7 @@ class MusicService:
             started = True
             state.progress_started = time.monotonic()
             state.status = 'playing'
-            if self.history is not None:
+            if self.history is not None and record_history:
                 try:
                     self.history.record(state.guild_id, state.current)
                 except Exception:

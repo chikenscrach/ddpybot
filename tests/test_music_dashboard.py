@@ -228,7 +228,7 @@ def test_dashboard_controls_match_existing_music_operations(tmp_path, action):
         else:
             played = []
 
-            async def play_next(current_state):
+            async def play_next(current_state, *, record_history=True):
                 played.append(current_state.current)
 
             service._play = play_next

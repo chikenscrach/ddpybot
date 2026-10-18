@@ -525,8 +525,13 @@ def test_stop_cancels_inflight_prefetch(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('mode', [music.LoopMode.TRACK, music.LoopMode.QUEUE])
-def test_history_records_each_play_start_but_not_pause_or_resume(tmp_path, monkeypatch, mode):
+@pytest.mark.parametrize(('mode', 'expected_records'), [
+    (music.LoopMode.TRACK, 1),
+    (music.LoopMode.QUEUE, 4),
+])
+def test_history_records_each_play_start_but_not_pause_or_resume(
+    tmp_path, monkeypatch, mode, expected_records,
+):
     async def scenario():
         history = Mock()
         service, member, voice = make_service(tmp_path, monkeypatch, history)
@@ -541,15 +546,120 @@ def test_history_records_each_play_start_but_not_pause_or_resume(tmp_path, monke
         history.record.assert_called_once_with(1, song)
 
         await service.set_loop_mode(1, mode)
-        voice.finish()
-        await spin_until(lambda: len(voice.played) == 2 and voice.is_playing())
-        assert history.record.call_count == 2
+        for replay in range(1, 4):
+            voice.finish()
+            await spin_until(
+                lambda replay=replay: len(voice.played) == replay + 1 and voice.is_playing()
+            )
+            assert history.record.call_count == (1 if mode == music.LoopMode.TRACK else replay + 1)
         assert all(call.args == (1, song) for call in history.record.call_args_list)
+        assert history.record.call_count == expected_records
 
         await service.close()
         await service.close()
         history.close.assert_called_once_with()
         assert not voice.connected
+    asyncio.run(scenario())
+
+
+def test_history_records_first_track_started_after_enabling_track_loop(tmp_path, monkeypatch):
+    async def scenario():
+        history = Mock()
+        service, member, voice = make_service(tmp_path, monkeypatch, history)
+        song = track(1)
+        acquiring, allow_acquire = asyncio.Event(), asyncio.Event()
+
+        async def acquire(_song):
+            acquiring.set()
+            await allow_acquire.wait()
+            return Path('audio.webm')
+
+        service.cache.resolve.return_value = [song]
+        service.cache.acquire.side_effect = acquire
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await acquiring.wait()
+        await service.set_loop_mode(1, music.LoopMode.TRACK)
+        allow_acquire.set()
+
+        await spin_until(lambda: voice.is_playing())
+        history.record.assert_called_once_with(1, song)
+        await service.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('transition', ['skip', 'disable_loop', 'failed_replay'])
+def test_history_records_next_song_after_track_loop_transition(
+    tmp_path, monkeypatch, transition,
+):
+    async def scenario():
+        history = Mock()
+        service, member, voice = make_service(tmp_path, monkeypatch, history)
+        first, second = track(1), track(2)
+        service.cache.resolve.return_value = [first, second]
+
+        if transition == 'failed_replay':
+            original_play = voice.play
+            play_attempts = 0
+
+            def fail_replay(source, *, after):
+                nonlocal play_attempts
+                play_attempts += 1
+                if play_attempts == 2:
+                    raise RuntimeError('replay failed')
+                original_play(source, after=after)
+
+            voice.play = fail_replay
+
+        await service.enqueue(member, SimpleNamespace(id=20), 'url')
+        await spin_until(lambda: voice.is_playing())
+        state = service.get_state(1)
+        await service.set_loop_mode(1, music.LoopMode.TRACK)
+        history.record.assert_called_once_with(1, first)
+
+        voice.finish()
+        if transition == 'failed_replay':
+            await spin_until(lambda: state.current is second and voice.is_playing())
+        else:
+            await spin_until(lambda: len(voice.played) == 2 and state.current is first)
+            if transition == 'skip':
+                await service.skip(1)
+            else:
+                await service.set_loop_mode(1, music.LoopMode.OFF)
+                voice.finish()
+            await spin_until(lambda: state.current is second and voice.is_playing())
+
+        assert [call.args for call in history.record.call_args_list] == [(1, first), (1, second)]
+        await service.close()
+    asyncio.run(scenario())
+
+
+def test_history_records_manual_replay_of_same_url_as_new_track(tmp_path, monkeypatch):
+    async def scenario():
+        history = Mock()
+        service, member, voice = make_service(tmp_path, monkeypatch, history)
+        first = track(1)
+        second = track(1)
+        first.requester_id, second.requester_id = member.id, 101
+        second_member = SimpleNamespace(
+            id=second.requester_id, guild=member.guild, voice=member.voice,
+        )
+        service.cache.resolve.side_effect = [[first], [second]]
+
+        await service.enqueue(member, SimpleNamespace(id=20), first.url)
+        await spin_until(lambda: voice.is_playing())
+        await service.set_loop_mode(1, music.LoopMode.TRACK)
+        voice.finish()
+        await spin_until(lambda: len(voice.played) == 2 and voice.is_playing())
+        await service.enqueue(second_member, SimpleNamespace(id=21), first.url)
+        await service.skip(1)
+        await spin_until(lambda: service.get_state(1).current is second and voice.is_playing())
+
+        calls = history.record.call_args_list
+        assert len(calls) == 2
+        assert calls[0].args == (1, first)
+        assert calls[1].args == (1, second)
+        assert calls[0].args[1] is first and calls[1].args[1] is second
+        await service.close()
     asyncio.run(scenario())
 
 
