@@ -622,9 +622,9 @@ const settingsGroups = [
       ["MUSIC.js_runtime", "JavaScript runtime", "text", ""],
       [
         "MUSIC.cookies_file",
-        "YouTube cookies 檔案路徑",
+        "音樂網站 cookies 檔案路徑",
         "optional",
-        "留空停用。此處僅設定路徑，不傳送檔案內容。",
+        "可包含 YouTube／Bilibili cookies；留空停用。此處僅設定路徑，不傳送檔案內容。",
       ],
       [
         "MUSIC.youtube_player_client",

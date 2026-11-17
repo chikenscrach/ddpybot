@@ -5,14 +5,14 @@
 ![discord.py](https://img.shields.io/badge/discord.py-2.7.1-blueviolet)
 ![Package Manager](https://img.shields.io/badge/uv-package%20manager-orange)
 
-DDPYBOT 是以 `discord.py` 開發的多功能 Discord Bot，整合 AI 對話、YouTube 音樂播放、地震資訊、PTT 文章、Danbooru 圖片、社群互動與 Bot owner 專用 Dashboard。
+DDPYBOT 是以 `discord.py` 開發的多功能 Discord Bot，整合 AI 對話、YouTube／Bilibili 音樂播放、地震資訊、PTT 文章、Danbooru 圖片、社群互動與 Bot owner 專用 Dashboard。
 
 專案採分層與模組化設計，將 Discord 指令、外部服務、共用工具、互動元件與資料存取拆分，方便維護與擴充。
 
 ## 主要功能
 
 - **AI 對話**：OpenRouter / Groq，多輪上下文、引用訊息與圖片輸入。
-- **音樂播放**：YouTube 點歌、播放清單、佇列與順位調整、單曲／清單循環、播放紀錄與快速重播、本機快取與 FFmpeg 播放。
+- **音樂播放**：YouTube／Bilibili 點歌、YouTube 播放清單、佇列與順位調整、單曲／清單循環、播放紀錄與快速重播、本機快取與 FFmpeg 播放。
 - **資訊查詢**：中央氣象署地震資訊、PTT 文章與 Danbooru 圖片。
 - **社群功能**：每日隨機標記、排行榜、統計與管理指令。
 - **啟動通知**：各伺服器可指定通知頻道，機器人每次啟動時通知一次，也可停用。
@@ -42,6 +42,20 @@ uv run python main.py
 ```
 
 至少需要在 `.env` 設定 `TOKEN`。AI、地震與 Dashboard 等功能會依啟用項目需要額外 API Key 或 OAuth2 設定。
+
+### YouTube／Bilibili 點歌
+
+加入語音頻道後，使用 `/play url:影片網址` 點歌，或 `/playnext url:影片網址` 插播。
+
+| 平台 | 支援網址 |
+| --- | --- |
+| YouTube | watch、youtu.be、Shorts、播放清單 |
+| Bilibili | `https://www.bilibili.com/video/BV…`、`https://www.bilibili.com/video/av…`、`https://b23.tv/…` |
+| Bilibili 指定分 P | 在影片網址加上 `?p=2` 等正整數編號 |
+
+Bilibili 每次加入一個分 P；未指定時播放第一 P，不會自動加入整部合集。不同分 P 各自快取，播放紀錄也會保留分 P，方便重播。目前不支援 Bilibili 收藏夾、合集列表、番劇、直播或互動影片。
+
+沿用現有 yt-dlp 下載與 FFmpeg 播放流程，優先選擇可用音訊，不增加轉碼步驟。一般公開影片不需新增設定；需要登入的影片可在 `MUSIC.cookies_file` 指定含 Bilibili cookies 的 Netscape 格式檔案。若同時使用 YouTube cookies，請在同一檔案保留兩個平台的記錄；此設定只接受一個檔案。影片仍須符合網站的登入、地區與存取限制，並沿用現有歌曲長度、檔案大小及快取限制。
 
 ### 調整待播順序
 
