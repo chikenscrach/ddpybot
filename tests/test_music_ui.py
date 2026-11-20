@@ -84,6 +84,26 @@ def test_now_playing_embed_contains_track_details_and_bounded_fields():
     assert any(field.name == "點歌者" and field.value == "<@42>" for field in embed.fields)
 
 
+@pytest.mark.parametrize("url", [
+    "https://www.bilibili.com/video/BV1xx411c7mD?p=2",
+    "https://b23.tv/AbC123",
+])
+@pytest.mark.parametrize("next_up", [False, True])
+def test_bilibili_commands_enqueue_without_youtube_playlist_confirmation(url, next_up):
+    from cmds.music import Music
+
+    cog = SimpleNamespace(
+        _require_voice=AsyncMock(return_value=(True, None)),
+        _enqueue=AsyncMock(return_value=[SimpleNamespace(title="Bilibili song")]),
+        _pending_playlists=set(),
+    )
+    interaction = _interaction(_member())
+    asyncio.run(Music._run_enqueue_command(cog, interaction, url, next_up=next_up))
+    cog._enqueue.assert_awaited_once_with(interaction, url, next_up=next_up)
+    assert not cog._pending_playlists
+    assert "1" in interaction.followup.send.call_args.args[0]
+
+
 def test_queue_pages_expose_all_tracks():
     pages = build_queue_embeds(_state(), page_size=20)
 

@@ -346,14 +346,14 @@ class Music(CogExtension):
             log.exception("music enqueue command failed")
             await _send_ephemeral(interaction, _music_error_text(exc))
 
-    @app_commands.command(name="play", description="播放 YouTube 影片或播放清單")
-    @app_commands.describe(url="YouTube 影片或播放清單網址")
+    @app_commands.command(name="play", description="播放 YouTube／Bilibili 影片或 YouTube 播放清單")
+    @app_commands.describe(url="YouTube 影片／播放清單，或 Bilibili BV／av／b23.tv 網址（可指定分 P）")
     @app_commands.guild_only()
     async def play(self, interaction: discord.Interaction, url: str):
         await self._run_enqueue_command(interaction, url, next_up=False)
 
-    @app_commands.command(name="playnext", description="將 YouTube 歌曲插入目前歌曲後播放")
-    @app_commands.describe(url="YouTube 影片或播放清單網址")
+    @app_commands.command(name="playnext", description="將 YouTube／Bilibili 歌曲插入目前歌曲後播放")
+    @app_commands.describe(url="YouTube 影片／播放清單，或 Bilibili BV／av／b23.tv 網址（可指定分 P）")
     @app_commands.guild_only()
     async def playnext(self, interaction: discord.Interaction, url: str):
         await self._run_enqueue_command(interaction, url, next_up=True)

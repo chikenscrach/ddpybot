@@ -1,8 +1,8 @@
-"""YouTube metadata resolution and on-disk audio cache.
+"""YouTube/Bilibili metadata resolution and on-disk audio cache.
 
 The module deliberately keeps the yt-dlp process boundary here.  Callers only
 deal in :class:`Track` objects and paths; they never receive an expiring
-YouTube media URL.  Files are leased with ``acquire``/``release`` so a cache
+media URL.  Files are leased with ``acquire``/``release`` so a cache
 cleanup cannot remove audio while another guild is using it.
 """
 
@@ -24,7 +24,9 @@ import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urljoin, urlsplit
+
+import aiohttp
 
 
 class MusicError(Exception):
@@ -55,11 +57,14 @@ _YOUTUBE_HOSTS = frozenset({
     "youtu.be",
     "www.youtu.be",
 })
+_BILIBILI_HOSTS = frozenset({"bilibili.com", "www.bilibili.com", "m.bilibili.com"})
+_BILIBILI_SHORT_HOSTS = frozenset({"b23.tv", "www.b23.tv"})
+_BILIBILI_METADATA_ID = re.compile(r"(BV[A-Za-z0-9]{10})(?:_p([1-9][0-9]{0,5}))?")
 
 
 def _validate_id(value: object, label: str) -> str:
     if not isinstance(value, str) or not _VIDEO_ID.fullmatch(value):
-        raise MusicError(f"{label} 不是有效的 YouTube ID。")
+        raise MusicError(f"{label} ID 格式不正確。")
     return value
 
 
@@ -148,17 +153,74 @@ def normalize_youtube_url(url: str) -> str:
     return f"https://www.youtube.com/playlist?list={playlist_id}"
 
 
-def has_playlist(url: str) -> bool:
-    """Return whether a valid YouTube URL contains a playlist selection."""
+def _music_url_host(url: str) -> str:
+    if not isinstance(url, str) or not url.strip():
+        raise MusicError("請提供 YouTube 或 Bilibili 網址。")
+    raw = url.strip()
+    if any(ord(char) <= 32 or ord(char) == 127 for char in raw):
+        raise MusicError("音樂網址格式不正確。")
+    try:
+        parsed = urlsplit(raw)
+        if parsed.scheme.lower() not in {"http", "https"} or parsed.username or parsed.password:
+            raise ValueError("invalid scheme or credentials")
+        if parsed.port is not None:
+            raise ValueError("custom port")
+        return (parsed.hostname or "").lower().rstrip(".")
+    except ValueError:
+        raise MusicError("只接受不含帳密或自訂連接埠的 YouTube／Bilibili http(s) 網址。") from None
 
-    canonical = normalize_youtube_url(url)
+
+def normalize_bilibili_url(url: str) -> str:
+    """Accept video/BV/av and b23 links, retaining only a selected part."""
+    host = _music_url_host(url)
+    parsed = urlsplit(url.strip())
+    path = unquote(parsed.path)
+    if host in _BILIBILI_SHORT_HOSTS:
+        if not re.fullmatch(r"/[A-Za-z0-9]{1,64}/?", path):
+            raise MusicError("Bilibili 短網址格式不正確。")
+        return f"https://b23.tv/{path.strip('/')}"
+    if host not in _BILIBILI_HOSTS:
+        raise MusicError("只接受 Bilibili 影片或 b23.tv 短網址。")
+    match = re.fullmatch(r"/video/([bB][vV][A-Za-z0-9]{10}|[aA][vV][1-9][0-9]{0,19})/?", path)
+    if match is None:
+        raise MusicError("請提供 Bilibili BV／av 影片網址。")
+    video_id = match.group(1)
+    video_id = ("BV" if video_id[:2].lower() == "bv" else "av") + video_id[2:]
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    parts = query.get("p")
+    result = f"https://www.bilibili.com/video/{video_id}"
+    if parts is not None:
+        if len(parts) != 1 or not re.fullmatch(r"[1-9][0-9]{0,5}", parts[0]):
+            raise MusicError("Bilibili 分 P 編號必須是正整數。")
+        result += f"?p={parts[0]}"
+    return result
+
+
+def normalize_music_url(url: str) -> str:
+    """Keep the music input allowlist independent of yt-dlp's extractors."""
+    host = _music_url_host(url)
+    if host in _YOUTUBE_HOSTS:
+        return normalize_youtube_url(url)
+    if host in _BILIBILI_HOSTS | _BILIBILI_SHORT_HOSTS:
+        return normalize_bilibili_url(url)
+    raise MusicError("只接受 YouTube 或 Bilibili 影片網址。")
+
+
+def has_playlist(url: str) -> bool:
+    """Only YouTube list selections use the playlist confirmation flow."""
+
+    canonical = normalize_music_url(url)
+    if _music_url_host(canonical) not in _YOUTUBE_HOSTS:
+        return False
     return _query_value(parse_qs(urlsplit(canonical).query), "list") is not None
 
 
 def single_video_url(url: str) -> str | None:
     """Return the canonical single-video URL, or ``None`` for playlist URLs."""
 
-    canonical = normalize_youtube_url(url)
+    canonical = normalize_music_url(url)
+    if _music_url_host(canonical) not in _YOUTUBE_HOSTS:
+        return canonical
     parsed = urlsplit(canonical)
     video_id = _query_value(parse_qs(parsed.query), "v")
     return f"https://www.youtube.com/watch?v={video_id}" if video_id else None
@@ -531,7 +593,7 @@ class MusicCache:
             except OSError:
                 raise MusicError("無法讀取 MUSIC.cookies_file，請確認檔案已掛載且機器人有讀取權限。") from None
             if len(raw) > 2 * 1024 * 1024:
-                raise MusicError("cookies 檔過大，請只匯出 YouTube cookies（上限 2 MiB）。")
+                raise MusicError("cookies 檔過大，請只匯出音樂網站的 cookies（上限 2 MiB）。")
             try:
                 content = raw.decode("utf-8-sig").replace("\r\n", "\n").replace("\r", "\n")
                 cookie_copy.write_text(content, encoding="utf-8")
@@ -545,7 +607,7 @@ class MusicCache:
                 if not jar:
                     raise ValueError("empty cookie jar")
             except (OSError, UnicodeError, ValueError, http.cookiejar.LoadError):
-                raise MusicError("cookies 檔格式無效或沒有 cookies；請提供 Netscape 格式的 YouTube cookies.txt。") from None
+                raise MusicError("cookies 檔格式無效或沒有 cookies；請提供 Netscape 格式的 cookies.txt。") from None
             yield [*args[:3], "--cookies", str(cookie_copy), *args[3:]]
 
     async def _spawn(self, args: list[str]):
@@ -652,14 +714,14 @@ class MusicCache:
             )
         except asyncio.TimeoutError as exc:
             await self._terminate_process(process, communication)
-            raise MusicError("YouTube 資訊讀取逾時，請稍後再試。") from exc
+            raise MusicError("影片資訊讀取逾時，請稍後再試。") from exc
         except asyncio.CancelledError:
             await self._terminate_process(process, communication)
             raise
         if process.returncode:
             detail = self._redact_error(error)
             suffix = f": {detail}" if detail else "。"
-            raise MusicError(f"YouTube 資訊讀取失敗{suffix}")
+            raise MusicError(f"影片資訊讀取失敗{suffix}")
         text = output.decode("utf-8", errors="replace").strip()
         if not text:
             raise MusicError("yt-dlp 沒有回傳影片資訊。")
@@ -697,7 +759,7 @@ class MusicCache:
         if truthy(metadata.get("is_live")) or truthy(metadata.get("is_upcoming")) or live_status in {
             "is_live", "is_upcoming", "live", "upcoming",
         }:
-            raise MusicError("目前不支援直播或尚未開始的 YouTube 影片。")
+            raise MusicError("目前不支援直播或尚未開始的影片。")
         duration = self._duration(metadata.get("duration"))
         if duration is not None and duration > self.config.max_duration_seconds:
             raise MusicError(
@@ -706,13 +768,33 @@ class MusicCache:
 
     def _track_from_metadata(self, metadata: Mapping[str, object], fallback_url: str,
                              requester_id: int) -> Track:
-        video_id = metadata.get("id")
-        if not isinstance(video_id, str) or not _VIDEO_ID.fullmatch(video_id):
-            candidate = single_video_url(str(metadata.get("webpage_url") or fallback_url))
-            if candidate:
-                video_id = _query_value(parse_qs(urlsplit(candidate).query), "v")
-        video_id = _validate_id(video_id, "影片")
-        video_url = f"https://www.youtube.com/watch?v={video_id}"
+        if "entries" in metadata or metadata.get("_type") in {"playlist", "multi_video"}:
+            raise MusicError("這個網址不是單一可播放影片，請提供一般影片或指定分 P 的網址。")
+        fallback = normalize_music_url(fallback_url)
+        if _music_url_host(fallback) in _BILIBILI_HOSTS:
+            # yt-dlp resolves av IDs to BV IDs and encodes the selected part
+            # in the ID.  webpage_url alone can lose that part selection.
+            match = _BILIBILI_METADATA_ID.fullmatch(str(metadata.get("id") or ""))
+            if match is None:
+                raise MusicError("Bilibili 回傳的影片 ID 格式不正確。")
+            bvid, part = match.group(1), match.group(2) or "1"
+            parsed = urlsplit(fallback)
+            requested_id = parsed.path.rsplit("/", 1)[-1]
+            requested_part = parse_qs(parsed.query).get("p", ["1"])[0]
+            if (requested_id.startswith("BV") and requested_id != bvid) or requested_part != part:
+                raise MusicError("Bilibili 回傳的影片或分 P 與點歌網址不一致。")
+            # Preserve existing YouTube filenames while isolating Bilibili
+            # tracks and every part in metadata, downloads, and cache leases.
+            video_id = f"bilibili_{bvid}_p{part}"
+            video_url = f"https://www.bilibili.com/video/{bvid}?p={part}"
+        else:
+            video_id = metadata.get("id")
+            if not isinstance(video_id, str) or not _VIDEO_ID.fullmatch(video_id):
+                candidate = single_video_url(str(metadata.get("webpage_url") or fallback))
+                if candidate:
+                    video_id = _query_value(parse_qs(urlsplit(candidate).query), "v")
+            video_id = _validate_id(video_id, "影片")
+            video_url = f"https://www.youtube.com/watch?v={video_id}"
         duration = self._duration(metadata.get("duration"))
         title = metadata.get("title")
         if not isinstance(title, str) or not title.strip():
@@ -740,9 +822,11 @@ class MusicCache:
 
     async def resolve(self, url: str, *, playlist: bool = False, requester_id: int = 0) -> list[Track]:
         self._ensure_open()
-        canonical = normalize_youtube_url(url)
+        canonical = normalize_music_url(url)
         if not isinstance(requester_id, int) or isinstance(requester_id, bool) or requester_id < 0:
             raise MusicError("點歌者 ID 不正確。")
+        if _music_url_host(canonical) in _BILIBILI_SHORT_HOSTS:
+            canonical = await self._expand_bilibili_short_url(canonical)
 
         is_list = playlist and has_playlist(canonical)
         if is_list:
@@ -787,13 +871,32 @@ class MusicCache:
         self._remember_metadata(track.id, metadata, True)
         return [track]
 
+    async def _expand_bilibili_short_url(self, url: str) -> str:
+        """Validate every redirect before following it; never use a generic extractor."""
+        timeout = aiohttp.ClientTimeout(total=min(15, self.config.download_timeout_seconds))
+        try:
+            async with aiohttp.ClientSession(timeout=timeout, cookie_jar=aiohttp.DummyCookieJar()) as session:
+                for _ in range(5):
+                    async with session.get(url, allow_redirects=False) as response:
+                        if response.status not in {301, 302, 303, 307, 308}:
+                            raise MusicError("無法展開 b23.tv 短網址，請改用 Bilibili 完整影片網址。")
+                        location = response.headers.get("Location")
+                        if not location:
+                            raise MusicError("Bilibili 短網址沒有回傳影片位置。")
+                        url = normalize_bilibili_url(urljoin(url, location))
+                    if _music_url_host(url) in _BILIBILI_HOSTS:
+                        return url
+        except (aiohttp.ClientError, asyncio.TimeoutError):
+            raise MusicError("Bilibili 短網址讀取失敗或逾時，請改用完整影片網址。") from None
+        raise MusicError("Bilibili 短網址重新導向次數過多，請改用完整影片網址。")
+
     async def _full_metadata_for(self, track: Track) -> dict:
         known = self._known_metadata.get(track.id)
         if known and known[1]:
             return known[0]
         target = single_video_url(track.url)
         if target is None:
-            raise MusicError("歌曲網址不是單一 YouTube 影片。")
+            raise MusicError("歌曲網址不是單一 YouTube／Bilibili 影片。")
         args = self._yt_base_args()
         args.extend(["--dump-single-json", "--skip-download", "--no-playlist", target])
         metadata = await self._run_metadata(args)
@@ -807,7 +910,7 @@ class MusicCache:
             raise MusicError("無法確認歌曲長度，已略過這首歌曲。")
         refreshed = self._track_from_metadata(metadata, track.url, track.requester_id)
         if refreshed.id != track.id:
-            raise MusicError("YouTube 回傳的影片 ID 與點歌網址不一致。")
+            raise MusicError("回傳的影片 ID 與點歌網址不一致。")
         return refreshed
 
     def _evict_for_capacity_locked(self, required_bytes: int = 0) -> None:
@@ -893,7 +996,7 @@ class MusicCache:
         track_id = self._safe_track_id(track.id)
         canonical = single_video_url(track.url)
         if canonical is None:
-            raise MusicError("歌曲網址不是單一 YouTube 影片。")
+            raise MusicError("歌曲網址不是單一 YouTube／Bilibili 影片。")
         if track.duration is not None:
             duration = self._duration(track.duration)
             if duration is None:
